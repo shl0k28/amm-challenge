@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {AMMStrategyBase} from "./AMMStrategyBase.sol";
 import {IAMMStrategy, TradeInfo} from "./IAMMStrategy.sol";
 
-/// @title Simple Strategy - 50 Basis Points
+/// @title Starter Strategy - 50 Basis Points
 /// @notice A starting point with fixed 50 bps fees. Copy and modify this file.
 contract Strategy is AMMStrategyBase {
     uint256 public constant FEE = 50 * BPS;
@@ -18,6 +18,6 @@ contract Strategy is AMMStrategyBase {
     }
 
     function getName() external pure override returns (string memory) {
-        return "SimpleStrategy_50bps";
+        return "StarterStrategy";
     }
 }

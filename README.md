@@ -4,7 +4,7 @@ Design dynamic fee strategies for a constant-product AMM. Your goal: maximize **
 
 ## Submission
 
-Submit your strategy at [ammchallenge.com](https://ammchallenge.com). Upload a `.sol` file containing a contract named `Strategy` that inherits from `AMMStrategyBase`.
+Upload a `.sol` file containing a contract named `Strategy` that inherits from `AMMStrategyBase`.
 
 Local results may diverge slightly from submission scores due to different RNG seeds. Run more simulations locally (`--simulations 99`) to reduce variance and get closer to expected server results.
 
@@ -88,6 +88,8 @@ Without competition, setting 10% fees would appear profitable—you'd capture hu
 The normalizer also means there's no "free lunch"—you can't beat 25 bps just by setting 24 bps. The optimal fee depends on market conditions.
 
 ## Writing a Strategy
+
+**Start with `contracts/src/StarterStrategy.sol`** — a simple 50 bps fixed-fee strategy. Copy it, rename `getName()`, and modify the fee logic.
 
 ```solidity
 contract Strategy is AMMStrategyBase {
