@@ -24,10 +24,11 @@ class AMM:
     """Constant product AMM with strategy-determined fees.
 
     Implements x * y = k invariant with configurable fee strategies.
-    Uses Uniswap V2 fee model:
-    - Swap validation uses fee-adjusted input: (x + γ·Δx)(y - Δy) ≥ k
-    - But FULL input (including fee) goes to reserves
-    - Result: k grows over time as fees accumulate (LP compensation)
+    Uses fee-on-input model where fees are collected into separate
+    buckets rather than being reinvested into liquidity:
+    - Swap uses fee-adjusted input: (x + γ·Δx)(y - Δy) = k
+    - Fee portion goes to accumulated_fees, NOT reserves
+    - Result: k stays constant; fees count toward PnL separately
     """
     strategy: AMMStrategy
     reserve_x: Decimal
@@ -35,6 +36,9 @@ class AMM:
     name: str = ""
     current_fees: FeeQuote = field(init=False)
     _initialized: bool = field(default=False, init=False)
+    # Accumulated fees (collected separately from reserves)
+    accumulated_fees_x: Decimal = field(default=Decimal("0"), init=False)
+    accumulated_fees_y: Decimal = field(default=Decimal("0"), init=False)
     # Performance optimization: batch after_swap calls
     _pending_trade: Optional[TradeInfo] = field(default=None, init=False)
     _trade_count: int = field(default=0, init=False)
@@ -270,15 +274,18 @@ class AMM:
     def execute_buy_x(self, amount_x: Decimal, timestamp: int) -> Optional[TradeInfo]:
         """Execute trade where AMM buys X (trader sells X for Y)."""
         # Use fast float math for quote
-        y_out, _ = self._fast_quote_buy_x(float(amount_x))
+        amount_x_f = float(amount_x)
+        y_out, fee_x_f = self._fast_quote_buy_x(amount_x_f)
         if y_out <= 0:
             return None
 
         amount_y = Decimal(str(y_out))
 
-        # Update reserves
-        self.reserve_x += amount_x
+        # Update reserves — fees go to separate bucket, not into liquidity
+        net_x_f = amount_x_f - fee_x_f
+        self.reserve_x += Decimal(str(net_x_f))
         self.reserve_y -= amount_y
+        self.accumulated_fees_x += Decimal(str(fee_x_f))
 
         trade_info = TradeInfo(
             side="buy",
@@ -295,14 +302,17 @@ class AMM:
     def execute_sell_x(self, amount_x: Decimal, timestamp: int) -> Optional[TradeInfo]:
         """Execute trade where AMM sells X (trader buys X with Y)."""
         # Use fast float math
-        total_y, _ = self._fast_quote_sell_x(float(amount_x))
+        total_y, fee_y_f = self._fast_quote_sell_x(float(amount_x))
         if total_y <= 0:
             return None
 
         amount_y = Decimal(str(total_y))
 
+        # Update reserves — fees go to separate bucket, not into liquidity
+        net_y_f = total_y - fee_y_f
         self.reserve_x -= amount_x
-        self.reserve_y += amount_y
+        self.reserve_y += Decimal(str(net_y_f))
+        self.accumulated_fees_y += Decimal(str(fee_y_f))
 
         trade_info = TradeInfo(
             side="sell",
@@ -319,14 +329,18 @@ class AMM:
     def execute_buy_x_with_y(self, amount_y: Decimal, timestamp: int) -> Optional[TradeInfo]:
         """Execute trade where trader pays Y to receive X."""
         # Use fast float math
-        x_out, _ = self._fast_quote_x_for_y(float(amount_y))
+        amount_y_f = float(amount_y)
+        x_out, fee_y_f = self._fast_quote_x_for_y(amount_y_f)
         if x_out <= 0:
             return None
 
         amount_x = Decimal(str(x_out))
 
+        # Update reserves — fees go to separate bucket, not into liquidity
+        net_y_f = amount_y_f - fee_y_f
         self.reserve_x -= amount_x
-        self.reserve_y += amount_y
+        self.reserve_y += Decimal(str(net_y_f))
+        self.accumulated_fees_y += Decimal(str(fee_y_f))
 
         trade_info = TradeInfo(
             side="sell",

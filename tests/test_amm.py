@@ -47,8 +47,8 @@ class TestAMM:
         initial_k = amm.k
         # Execute a trade
         amm.execute_sell_x(Decimal("5"), timestamp=0)
-        # k should be preserved (fees go to reserves)
-        assert amm.k >= initial_k  # >= because fees add to reserves
+        # k is preserved (fees go to separate bucket, not reserves)
+        assert abs(amm.k - initial_k) / initial_k < Decimal("1e-10")
 
     def test_quote_buy_x_no_fee(self):
         """Test quote calculation with zero fees."""
@@ -100,7 +100,7 @@ class TestAMM:
     def test_execute_buy_x(self, amm):
         """Test executing a buy trade.
 
-        Uniswap V2 model: FULL input goes to reserves (fees accumulate).
+        Fees go to separate bucket — only net input enters reserves.
         """
         initial_x = amm.reserve_x
         initial_y = amm.reserve_y
@@ -112,16 +112,19 @@ class TestAMM:
         assert trade.side == "buy"
         assert trade.amount_x == Decimal("10")
         assert trade.timestamp == 5
-        # Uniswap V2: FULL X added to reserves
-        assert amm.reserve_x == initial_x + Decimal("10")
+        # Only net X (after fee) added to reserves
+        assert amm.reserve_x > initial_x
+        assert amm.reserve_x < initial_x + Decimal("10")
         assert amm.reserve_y < initial_y
-        # k should INCREASE (fees accumulated)
-        assert amm.k > initial_k
+        # k preserved (fees in separate bucket)
+        assert abs(amm.k - initial_k) / initial_k < Decimal("1e-10")
+        # Fee tracked separately
+        assert amm.accumulated_fees_x > 0
 
     def test_execute_sell_x(self, amm):
         """Test executing a sell trade.
 
-        Uniswap V2 model: FULL Y paid by trader goes to reserves.
+        Fees go to separate bucket — only net input enters reserves.
         """
         initial_x = amm.reserve_x
         initial_y = amm.reserve_y
@@ -133,10 +136,12 @@ class TestAMM:
         assert trade.side == "sell"
         assert trade.amount_x == Decimal("10")
         assert amm.reserve_x == initial_x - Decimal("10")
-        # Uniswap V2: FULL Y added to reserves
+        # Only net Y (after fee) added to reserves
         assert amm.reserve_y > initial_y
-        # k should INCREASE (fees accumulated)
-        assert amm.k > initial_k
+        # k preserved (fees in separate bucket)
+        assert abs(amm.k - initial_k) / initial_k < Decimal("1e-10")
+        # Fee tracked separately
+        assert amm.accumulated_fees_y > 0
 
     def test_execute_sell_x_exceeds_reserves(self, amm):
         """Test that selling more than reserves fails."""

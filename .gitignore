@@ -50,6 +50,9 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Strategies
+strategies/
+
 # Misc
 *.log
 .env
