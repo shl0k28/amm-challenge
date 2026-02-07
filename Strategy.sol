@@ -17,22 +17,25 @@ contract Strategy is AMMStrategyBase {
     //////////////////////////////////////////////////////////////*/
 
     // Hard bounds in basis points.
-    uint256 private constant MIN_FEE_BPS = 20;
-    uint256 private constant MAX_FEE_BPS = 708;
-    uint256 private constant MAX_SPREAD_BPS = 933;
+    uint256 private constant MIN_FEE_BPS = 12;
+    uint256 private constant MAX_FEE_BPS = 954;
+    uint256 private constant MAX_SPREAD_BPS = 856;
 
     // Defensive core fee: this simulator rewards stale-price protection.
-    uint256 private constant CORE_BPS = 46;
-    uint256 private constant VOL_MULT_BPS = 1205; // +1.205 bps per 10 bps sigma
-    uint256 private constant BASE_MIN_BPS = 31;
+    uint256 private constant CORE_BPS = 48;
+    uint256 private constant VOL_MULT_BPS = 1500; // +1.500 bps per 10 bps sigma
+    uint256 private constant BASE_MIN_BPS = 24;
 
     // Arrival-rate adjustment: slower fills -> widen, faster -> tighten a bit.
     uint256 private constant LAMBDA_REF = WAD / 3; // ~0.333 fills/step
-    uint256 private constant FLOW_SWING_BPS = 13;
-    uint256 private constant LOWLAM_SIGMA_WIDEN_BPS = 28;
+    uint256 private constant FLOW_SWING_BPS = 6;
+    uint256 private constant LOWLAM_SIGMA_WIDEN_BPS = 14;
+    uint256 private constant ARMOR_LAMBDA = WAD / 5; // 0.20 fills/step
+    uint256 private constant ARMOR_SIGMA = 9 * BPS;
+    uint256 private constant ARMOR_MIN_BPS = 93;
 
     // Fair/vol estimation from likely-arb prints.
-    uint256 private constant ARB_MAX_RATIO_WAD = 21 * BPS; // <= 0.21% of reserveY
+    uint256 private constant ARB_MAX_RATIO_WAD = 34 * BPS; // <= 0.34% of reserveY
     uint256 private constant ALPHA_P = 35e16; // 0.35
     uint256 private constant ALPHA_VAR = 20e16; // 0.20
     uint256 private constant ALPHA_L = 14e16; // 0.14
@@ -44,9 +47,9 @@ contract Strategy is AMMStrategyBase {
     // Side-specific no-arb shield from spot/fair divergence.
     // If spot < pHat, ask side is vulnerable: fee >= (1 - spot/pHat) + buffers.
     // If spot > pHat, bid side is vulnerable: fee >= (1 - pHat/spot) + buffers.
-    uint256 private constant SHIELD_SAFETY_BPS = 2;
-    uint256 private constant VOL_BUFFER_DIV = 5; // add sigma/5 as extra band safety
-    uint256 private constant SAFE_SIDE_REBATE_BPS = 37;
+    uint256 private constant SHIELD_SAFETY_BPS = 0;
+    uint256 private constant VOL_BUFFER_DIV = 6; // add sigma/6 as extra band safety
+    uint256 private constant SAFE_SIDE_REBATE_BPS = 42;
 
     // Intra-step continuation rebate: if multiple trades hit in same timestamp,
     // later fills are retail-only (arb already happened), so we can undercut.
@@ -59,22 +62,23 @@ contract Strategy is AMMStrategyBase {
     uint256 private constant BIG_BUMP_BPS = 4;
     uint256 private constant SHOCK_DECAY_BPS = 1;
     uint256 private constant SHOCK_MAX_BPS = 18;
-    uint256 private constant STREAK_STEP_BPS = 2;
-    uint256 private constant STREAK_MAX_BPS = 8;
+    uint256 private constant STREAK_STEP_BPS = 1;
+    uint256 private constant STREAK_MAX_BPS = 5;
 
     // Inventory skew around x* = sqrt(k / pHat).
-    uint256 private constant INV_SENS_BPS = 90;
-    uint256 private constant INV_MAX_SKEW_BPS = 18;
+    uint256 private constant INV_SENS_BPS = 201;
+    uint256 private constant INV_MAX_SKEW_BPS = 59;
 
     // Event toxicity state: high after first-trade retail, low after arb resets.
-    uint256 private constant TOX_MAX_BPS = 21;
+    uint256 private constant TOX_MAX_BPS = 28;
     uint256 private constant TOX_DECAY_BPS = 1;
-    uint256 private constant TOX_UP_BPS = 3;
-    uint256 private constant TOX_DOWN_BPS = 3;
+    uint256 private constant TOX_UP_BPS = 5;
+    uint256 private constant TOX_DOWN_BPS = 4;
     uint256 private constant TOX_BIG_UP_BPS = 4;
+    uint256 private constant CARRY_STEP_BPS = 0;
 
     // Fee smoothing.
-    uint256 private constant ALPHA_SLOW = 71e16; // 0.71
+    uint256 private constant ALPHA_SLOW = 74e16; // 0.74
     uint256 private constant ALPHA_FAST = 100e16; // 1.00
 
     /*//////////////////////////////////////////////////////////////
@@ -237,6 +241,12 @@ contract Strategy is AMMStrategyBase {
             baseBps += extra;
         }
 
+        // Armor mode: in sparse + noisy markets, keep carry fees high to protect
+        // against the next-step first-trade arb, then rely on side rebates/skew.
+        if (lambdaEWMA < ARMOR_LAMBDA && sigma > ARMOR_SIGMA && baseBps < ARMOR_MIN_BPS) {
+            baseBps = ARMOR_MIN_BPS;
+        }
+
         /*//////////////////////////////////////////////////////////////
                      3) SIDE-SPECIFIC BAND SHIELD
         //////////////////////////////////////////////////////////////*/
@@ -300,6 +310,14 @@ contract Strategy is AMMStrategyBase {
             if (side == 1) bidBps += BIG_BUMP_BPS;
             else askBps += BIG_BUMP_BPS;
         }
+
+        // Continuation trades imply this timestamp is active; bias end-of-step carry
+        // fees upward to better protect the next-step first trade.
+        if (!firstInStep && stepTrades >= 2 && CARRY_STEP_BPS > 0) {
+            bidBps += CARRY_STEP_BPS;
+            askBps += CARRY_STEP_BPS;
+        }
+
 
         // Retail-continuation mode within the same step.
         if (!firstInStep && stepTrades >= 2 && tradeRatio <= BIG_RATIO_WAD && shockBps == 0) {
