@@ -17,21 +17,22 @@ contract Strategy is AMMStrategyBase {
     //////////////////////////////////////////////////////////////*/
 
     // Hard bounds in basis points.
-    uint256 private constant MIN_FEE_BPS = 23;
-    uint256 private constant MAX_FEE_BPS = 244;
-    uint256 private constant MAX_SPREAD_BPS = 160;
+    uint256 private constant MIN_FEE_BPS = 20;
+    uint256 private constant MAX_FEE_BPS = 708;
+    uint256 private constant MAX_SPREAD_BPS = 933;
 
     // Defensive core fee: this simulator rewards stale-price protection.
-    uint256 private constant CORE_BPS = 50;
-    uint256 private constant VOL_MULT_BPS = 730; // +0.73 bps per 10 bps sigma
-    uint256 private constant BASE_MIN_BPS = 45;
+    uint256 private constant CORE_BPS = 46;
+    uint256 private constant VOL_MULT_BPS = 1205; // +1.205 bps per 10 bps sigma
+    uint256 private constant BASE_MIN_BPS = 31;
 
     // Arrival-rate adjustment: slower fills -> widen, faster -> tighten a bit.
     uint256 private constant LAMBDA_REF = WAD / 3; // ~0.333 fills/step
-    uint256 private constant FLOW_SWING_BPS = 8;
+    uint256 private constant FLOW_SWING_BPS = 13;
+    uint256 private constant LOWLAM_SIGMA_WIDEN_BPS = 28;
 
     // Fair/vol estimation from likely-arb prints.
-    uint256 private constant ARB_MAX_RATIO_WAD = 15 * BPS; // <= 0.15% of reserveY
+    uint256 private constant ARB_MAX_RATIO_WAD = 21 * BPS; // <= 0.21% of reserveY
     uint256 private constant ALPHA_P = 35e16; // 0.35
     uint256 private constant ALPHA_VAR = 20e16; // 0.20
     uint256 private constant ALPHA_L = 14e16; // 0.14
@@ -43,9 +44,13 @@ contract Strategy is AMMStrategyBase {
     // Side-specific no-arb shield from spot/fair divergence.
     // If spot < pHat, ask side is vulnerable: fee >= (1 - spot/pHat) + buffers.
     // If spot > pHat, bid side is vulnerable: fee >= (1 - pHat/spot) + buffers.
-    uint256 private constant SHIELD_SAFETY_BPS = 1;
-    uint256 private constant VOL_BUFFER_DIV = 2; // add sigma/2 as extra band safety
-    uint256 private constant SAFE_SIDE_REBATE_BPS = 6;
+    uint256 private constant SHIELD_SAFETY_BPS = 2;
+    uint256 private constant VOL_BUFFER_DIV = 5; // add sigma/5 as extra band safety
+    uint256 private constant SAFE_SIDE_REBATE_BPS = 37;
+
+    // Intra-step continuation rebate: if multiple trades hit in same timestamp,
+    // later fills are retail-only (arb already happened), so we can undercut.
+    uint256 private constant INTRASTEP_REBATE_BPS = 0;
 
     // Shock/streak toxicity on the active side.
     uint256 private constant SHOCK_RATIO_WAD = 90 * BPS; // 0.90%
@@ -61,15 +66,22 @@ contract Strategy is AMMStrategyBase {
     uint256 private constant INV_SENS_BPS = 90;
     uint256 private constant INV_MAX_SKEW_BPS = 18;
 
+    // Event toxicity state: high after first-trade retail, low after arb resets.
+    uint256 private constant TOX_MAX_BPS = 21;
+    uint256 private constant TOX_DECAY_BPS = 1;
+    uint256 private constant TOX_UP_BPS = 3;
+    uint256 private constant TOX_DOWN_BPS = 3;
+    uint256 private constant TOX_BIG_UP_BPS = 4;
+
     // Fee smoothing.
-    uint256 private constant ALPHA_SLOW = 28e16; // 0.28
-    uint256 private constant ALPHA_FAST = 75e16; // 0.75
+    uint256 private constant ALPHA_SLOW = 71e16; // 0.71
+    uint256 private constant ALPHA_FAST = 100e16; // 1.00
 
     /*//////////////////////////////////////////////////////////////
                                SLOT LAYOUT
     //////////////////////////////////////////////////////////////*/
     // [0] lastSeenTs
-    // [1] lastRetailTs
+    // [1] spare
     // [2] lastBidFee
     // [3] lastAskFee
     // [4] pHat
@@ -79,6 +91,8 @@ contract Strategy is AMMStrategyBase {
     // [8] shockBps
     // [9] lastSide (1=AMM buys X, 2=AMM sells X)
     // [10] sameSideStreak
+    // [11] tradesThisStep
+    // [13] toxBps
 
     function afterInitialize(uint256 initialX, uint256 initialY)
         external
@@ -98,6 +112,7 @@ contract Strategy is AMMStrategyBase {
         slots[5] = spot;
         slots[6] = wmul(10 * BPS, 10 * BPS); // seed var ~ (10 bps)^2
         slots[7] = LAMBDA_REF;
+        slots[13] = 10;
     }
 
     function afterSwap(TradeInfo calldata trade)
@@ -106,7 +121,6 @@ contract Strategy is AMMStrategyBase {
         returns (uint256 bidFee, uint256 askFee)
     {
         uint256 lastSeenTs = slots[0];
-        uint256 lastRetailTs = slots[1];
         uint256 lastBid = slots[2];
         uint256 lastAsk = slots[3];
         uint256 pHat = slots[4];
@@ -116,6 +130,8 @@ contract Strategy is AMMStrategyBase {
         uint256 shockBps = slots[8];
         uint256 lastSide = slots[9];
         uint256 streak = slots[10];
+        uint256 stepTrades = slots[11];
+        uint256 toxBps = slots[13];
 
         if (lastBid == 0) lastBid = bpsToWad(CORE_BPS);
         if (lastAsk == 0) lastAsk = bpsToWad(CORE_BPS);
@@ -125,7 +141,14 @@ contract Strategy is AMMStrategyBase {
         uint256 spot = trade.reserveX > 0 ? wdiv(trade.reserveY, trade.reserveX) : pHat;
         uint256 tradeRatio = trade.reserveY > 0 ? wdiv(trade.amountY, trade.reserveY) : 0;
         bool firstInStep = trade.timestamp != lastSeenTs;
+        uint256 dtSteps = 1;
+        if (firstInStep && lastSeenTs > 0 && trade.timestamp > lastSeenTs) {
+            dtSteps = trade.timestamp - lastSeenTs;
+            uint256 instLambda = WAD / dtSteps;
+            lambdaEWMA = _ewma(lambdaEWMA, instLambda, ALPHA_L);
+        }
         bool likelyArb = firstInStep && (tradeRatio <= ARB_MAX_RATIO_WAD);
+        stepTrades = firstInStep ? 1 : (stepTrades + 1);
 
         // Update side streak.
         uint256 side = trade.isBuy ? 1 : 2;
@@ -157,13 +180,20 @@ contract Strategy is AMMStrategyBase {
         } else {
             // Lightly mean-recenter pHat when we do not observe arb prints.
             pHat = _ewma(pHat, spot, 6e16); // 0.06
+        }
 
-            if (lastRetailTs > 0 && trade.timestamp > lastRetailTs) {
-                uint256 dt = trade.timestamp - lastRetailTs;
-                uint256 instLambda = WAD / dt;
-                lambdaEWMA = _ewma(lambdaEWMA, instLambda, ALPHA_L);
+        // Update event-toxicity state.
+        if (toxBps > TOX_DECAY_BPS) toxBps -= TOX_DECAY_BPS;
+        else toxBps = 0;
+        if (firstInStep) {
+            if (likelyArb) {
+                toxBps = toxBps > TOX_DOWN_BPS ? (toxBps - TOX_DOWN_BPS) : 0;
+            } else {
+                toxBps = _minU(toxBps + TOX_UP_BPS, TOX_MAX_BPS);
             }
-            lastRetailTs = trade.timestamp;
+        }
+        if (tradeRatio >= BIG_RATIO_WAD) {
+            toxBps = _minU(toxBps + TOX_BIG_UP_BPS, TOX_MAX_BPS);
         }
 
         // Shock state (Hawkes-lite with linear decay).
@@ -184,6 +214,7 @@ contract Strategy is AMMStrategyBase {
 
         uint256 baseBps = CORE_BPS + ((sigma * VOL_MULT_BPS) / WAD) + shockBps;
         if (baseBps < BASE_MIN_BPS) baseBps = BASE_MIN_BPS;
+        baseBps += toxBps;
 
         if (lambdaEWMA > 0) {
             if (lambdaEWMA >= LAMBDA_REF) {
@@ -197,6 +228,13 @@ contract Strategy is AMMStrategyBase {
                 if (widen > FLOW_SWING_BPS) widen = FLOW_SWING_BPS;
                 baseBps += widen;
             }
+        }
+
+        // Extra defense in sparse + volatile regimes where adverse selection dominates.
+        if (lambdaEWMA < LAMBDA_REF && sigma > (10 * BPS)) {
+            uint256 stress = WAD - wdiv(lambdaEWMA, LAMBDA_REF);
+            uint256 extra = (stress * LOWLAM_SIGMA_WIDEN_BPS) / WAD;
+            baseBps += extra;
         }
 
         /*//////////////////////////////////////////////////////////////
@@ -263,6 +301,12 @@ contract Strategy is AMMStrategyBase {
             else askBps += BIG_BUMP_BPS;
         }
 
+        // Retail-continuation mode within the same step.
+        if (!firstInStep && stepTrades >= 2 && tradeRatio <= BIG_RATIO_WAD && shockBps == 0) {
+            bidBps = bidBps > INTRASTEP_REBATE_BPS ? (bidBps - INTRASTEP_REBATE_BPS) : MIN_FEE_BPS;
+            askBps = askBps > INTRASTEP_REBATE_BPS ? (askBps - INTRASTEP_REBATE_BPS) : MIN_FEE_BPS;
+        }
+
         // Bound BPS and spread.
         bidBps = _clampBps(bidBps);
         askBps = _clampBps(askBps);
@@ -285,7 +329,7 @@ contract Strategy is AMMStrategyBase {
 
         // Persist.
         slots[0] = trade.timestamp;
-        slots[1] = lastRetailTs;
+        slots[1] = 0;
         slots[2] = bidFee;
         slots[3] = askFee;
         slots[4] = pHat;
@@ -295,10 +339,12 @@ contract Strategy is AMMStrategyBase {
         slots[8] = shockBps;
         slots[9] = lastSide;
         slots[10] = streak;
+        slots[11] = stepTrades;
+        slots[13] = toxBps;
     }
 
     function getName() external pure override returns (string memory) {
-        return "BandShield_v1";
+        return "BandShield_v4";
     }
 
     function _ewma(uint256 prev, uint256 sample, uint256 alpha) internal pure returns (uint256) {
