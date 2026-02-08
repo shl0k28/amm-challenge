@@ -9,24 +9,21 @@ contract Strategy is AMMStrategyBase {
     uint256 private constant MAX_FEE_BPS = 954;
     uint256 private constant MAX_SPREAD_BPS = 900;
 
-    uint256 private constant ARB_BASE_RATIO_WAD = 24 * BPS;
-    uint256 private constant ARB_RATIO_DIV = 2;
+    uint256 private constant ARB_MAX_RATIO_WAD = 40 * BPS;
     uint256 private constant ARB_SIGMA_DIV = 5;
-    uint256 private constant ARB_MAX_CAP_WAD = 90 * BPS;
     uint256 private constant ALPHA_P = 36e16;
     uint256 private constant ALPHA_VAR = 20e16;
     uint256 private constant ALPHA_L = 14e16;
-    uint256 private constant ALPHA_RATIO = 8e16;
 
     uint256 private constant SIGMA_MIN = 7 * BPS;
     uint256 private constant SIGMA_MAX = 24 * BPS;
 
-    uint256 private constant SAFE_BASE_BPS = 2;
-    uint256 private constant SAFE_VOL_MULT_BPS = 1961;
-    uint256 private constant SAFE_LAMBDA_SWING_BPS = 9;
+    uint256 private constant SAFE_BASE_BPS = 4;
+    uint256 private constant SAFE_VOL_MULT_BPS = 2874;
+    uint256 private constant SAFE_LAMBDA_SWING_BPS = 7;
 
-    uint256 private constant VULN_MIN_BPS = 50;
-    uint256 private constant VULN_SIGMA_DIV = 12;
+    uint256 private constant VULN_MIN_BPS = 48;
+    uint256 private constant VULN_SIGMA_DIV = 10;
     uint256 private constant VULN_BUFFER_BPS = 0;
 
     uint256 private constant LAMBDA_REF = WAD / 3;
@@ -34,19 +31,36 @@ contract Strategy is AMMStrategyBase {
     uint256 private constant ARMOR_SIGMA = 10 * BPS;
     uint256 private constant ARMOR_SAFE_FLOOR = 19;
     uint256 private constant ARMOR_VULN_FLOOR = 69;
+    uint256 private constant HAZARD_SAFE_FLOOR = 14;
 
-    uint256 private constant INV_SENS_BPS = 87;
-    uint256 private constant INV_MAX_SKEW_BPS = 55;
+    uint256 private constant INV_SENS_BPS = 126;
+    uint256 private constant INV_MAX_SKEW_BPS = 54;
 
-    uint256 private constant CONT_ARB_REBATE_BPS = 1;
-    uint256 private constant CONT_TAIL_REBATE_BPS = 4;
+    uint256 private constant BASE_REBATE_BPS = 53;
+    uint256 private constant MIN_REBATE_BPS = 21;
+    uint256 private constant MAX_REBATE_BPS = 68;
+    uint256 private constant HIGH_FLOW_REBATE_ADD_BPS = 6;
+    uint256 private constant LOW_FLOW_REBATE_CUT_BPS = 12;
+    uint256 private constant CONT_ARB_REBATE_BPS = 3;
+    uint256 private constant CONT_TAIL_REBATE_BPS = 0;
+    uint256 private constant CONF_AGE_CAP = 220;
 
     uint256 private constant SHOCK_RATIO_WAD = 90 * BPS;
     uint256 private constant SHOCK_BUMP_BPS = 6;
     uint256 private constant SHOCK_DECAY_BPS = 1;
     uint256 private constant SHOCK_MAX_BPS = 16;
 
-    uint256 private constant ALPHA_SLOW = 77e16;
+    uint256 private constant HAZARD_DECAY_BPS = 1;
+    uint256 private constant HAZARD_UP_NONARB_BPS = 4;
+    uint256 private constant HAZARD_DOWN_ARB_BPS = 3;
+    uint256 private constant HAZARD_IDLE_DIV = 4;
+    uint256 private constant HAZARD_IDLE_MAX_BPS = 6;
+    uint256 private constant HAZARD_MAX_BPS = 36;
+    uint256 private constant HAZARD_REBATE_HALF_AT = 14;
+    uint256 private constant HAZARD_SAFE_FLOOR_AT = 22;
+    uint256 private constant HAZARD_TO_VULN_DIV = 1;
+
+    uint256 private constant ALPHA_SLOW = 74e16;
     uint256 private constant ALPHA_FAST = 100e16;
 
     // slots:
@@ -59,7 +73,8 @@ contract Strategy is AMMStrategyBase {
     // [7] lambda
     // [8] shock
     // [9] stepTrades
-    // [10] ratioEWMA
+    // [10] lastArbTs
+    // [11] hazard
 
     function afterInitialize(uint256 initialX, uint256 initialY)
         external
@@ -77,7 +92,7 @@ contract Strategy is AMMStrategyBase {
         slots[5] = spot;
         slots[6] = wmul(10 * BPS, 10 * BPS);
         slots[7] = LAMBDA_REF;
-        slots[10] = 24 * BPS;
+        slots[11] = 10;
     }
 
     function afterSwap(TradeInfo calldata trade)
@@ -94,20 +109,21 @@ contract Strategy is AMMStrategyBase {
         uint256 lambdaEWMA = slots[7];
         uint256 shockBps = slots[8];
         uint256 stepTrades = slots[9];
-        uint256 ratioEWMA = slots[10];
+        uint256 lastArbTs = slots[10];
+        uint256 hazardBps = slots[11];
 
         if (lastBid == 0) lastBid = bpsToWad(34);
         if (lastAsk == 0) lastAsk = bpsToWad(34);
         if (pHat == 0) pHat = trade.reserveX > 0 ? wdiv(trade.reserveY, trade.reserveX) : 100 * WAD;
         if (lastFair == 0) lastFair = pHat;
-        if (ratioEWMA == 0) ratioEWMA = 24 * BPS;
 
         uint256 spot = trade.reserveX > 0 ? wdiv(trade.reserveY, trade.reserveX) : pHat;
         uint256 tradeRatio = trade.reserveY > 0 ? wdiv(trade.amountY, trade.reserveY) : 0;
         bool firstInStep = trade.timestamp != lastTs;
+        uint256 dt = 1;
 
         if (firstInStep && lastTs > 0 && trade.timestamp > lastTs) {
-            uint256 dt = trade.timestamp - lastTs;
+            dt = trade.timestamp - lastTs;
             uint256 inst = WAD / dt;
             lambdaEWMA = _ewma(lambdaEWMA, inst, ALPHA_L);
         }
@@ -117,8 +133,7 @@ contract Strategy is AMMStrategyBase {
         if (sigma > SIGMA_MAX) sigma = SIGMA_MAX;
         uint256 sigmaBps = sigma / BPS;
 
-        uint256 arbCap = ARB_BASE_RATIO_WAD + (ratioEWMA / ARB_RATIO_DIV) + (sigma / ARB_SIGMA_DIV);
-        if (arbCap > ARB_MAX_CAP_WAD) arbCap = ARB_MAX_CAP_WAD;
+        uint256 arbCap = ARB_MAX_RATIO_WAD + (sigma / ARB_SIGMA_DIV);
         bool likelyArb = firstInStep && (tradeRatio <= arbCap);
         stepTrades = firstInStep ? 1 : (stepTrades + 1);
 
@@ -132,9 +147,24 @@ contract Strategy is AMMStrategyBase {
             uint256 diff = ratio > WAD ? (ratio - WAD) : (WAD - ratio);
             varEWMA = _ewma(varEWMA, wmul(diff, diff), ALPHA_VAR);
             lastFair = pEst;
+            lastArbTs = trade.timestamp;
         } else {
             pHat = _ewma(pHat, spot, 5e16);
         }
+
+        if (hazardBps > HAZARD_DECAY_BPS) hazardBps -= HAZARD_DECAY_BPS;
+        else hazardBps = 0;
+        if (likelyArb) {
+            hazardBps = hazardBps > HAZARD_DOWN_ARB_BPS ? (hazardBps - HAZARD_DOWN_ARB_BPS) : 0;
+        } else if (firstInStep) {
+            hazardBps += HAZARD_UP_NONARB_BPS;
+        }
+        if (firstInStep && dt > 1) {
+            uint256 idleBump = dt / HAZARD_IDLE_DIV;
+            if (idleBump > HAZARD_IDLE_MAX_BPS) idleBump = HAZARD_IDLE_MAX_BPS;
+            hazardBps += idleBump;
+        }
+        if (hazardBps > HAZARD_MAX_BPS) hazardBps = HAZARD_MAX_BPS;
 
         if (shockBps > SHOCK_DECAY_BPS) shockBps -= SHOCK_DECAY_BPS;
         else shockBps = 0;
@@ -142,8 +172,6 @@ contract Strategy is AMMStrategyBase {
             if (shockBps + SHOCK_BUMP_BPS > SHOCK_MAX_BPS) shockBps = SHOCK_MAX_BPS;
             else shockBps += SHOCK_BUMP_BPS;
         }
-
-        ratioEWMA = _ewma(ratioEWMA, tradeRatio, ALPHA_RATIO);
 
         uint256 safeBps = SAFE_BASE_BPS + ((sigma * SAFE_VOL_MULT_BPS) / WAD) + shockBps;
         if (lambdaEWMA > 0) {
@@ -161,12 +189,31 @@ contract Strategy is AMMStrategyBase {
         }
         if (safeBps < MIN_FEE_BPS) safeBps = MIN_FEE_BPS;
 
-        uint256 vulnFloor = VULN_MIN_BPS + sigmaBps / VULN_SIGMA_DIV;
+        if (hazardBps >= HAZARD_SAFE_FLOOR_AT && safeBps < HAZARD_SAFE_FLOOR) {
+            safeBps = HAZARD_SAFE_FLOOR;
+        }
+
+        uint256 vulnFloor = VULN_MIN_BPS + sigmaBps / VULN_SIGMA_DIV + hazardBps / HAZARD_TO_VULN_DIV;
 
         if (lambdaEWMA < ARMOR_LAMBDA && sigma > ARMOR_SIGMA) {
             if (safeBps < ARMOR_SAFE_FLOOR) safeBps = ARMOR_SAFE_FLOOR;
             if (vulnFloor < ARMOR_VULN_FLOOR) vulnFloor = ARMOR_VULN_FLOOR;
         }
+
+        uint256 calmRatio = SIGMA_MAX > SIGMA_MIN ? ((SIGMA_MAX - sigma) * WAD) / (SIGMA_MAX - SIGMA_MIN) : 0;
+        uint256 rebateBps = (BASE_REBATE_BPS * calmRatio) / WAD;
+        if (lambdaEWMA > LAMBDA_REF) rebateBps += HIGH_FLOW_REBATE_ADD_BPS;
+        else rebateBps = rebateBps > LOW_FLOW_REBATE_CUT_BPS ? (rebateBps - LOW_FLOW_REBATE_CUT_BPS) : 0;
+        if (hazardBps >= HAZARD_REBATE_HALF_AT) rebateBps /= 2;
+        if (lastArbTs > 0 && trade.timestamp > lastArbTs) {
+            uint256 age = trade.timestamp - lastArbTs;
+            if (age >= CONF_AGE_CAP) rebateBps = 0;
+            else rebateBps = (rebateBps * (CONF_AGE_CAP - age)) / CONF_AGE_CAP;
+        }
+        if (firstInStep && likelyArb && shockBps == 0 && hazardBps <= HAZARD_REBATE_HALF_AT) rebateBps += CONT_ARB_REBATE_BPS;
+        else if (!firstInStep && stepTrades >= 2 && shockBps == 0 && hazardBps < HAZARD_SAFE_FLOOR_AT) rebateBps += CONT_TAIL_REBATE_BPS;
+        if (rebateBps < MIN_REBATE_BPS) rebateBps = MIN_REBATE_BPS;
+        if (rebateBps > MAX_REBATE_BPS) rebateBps = MAX_REBATE_BPS;
 
         uint256 bidBps = safeBps;
         uint256 askBps = safeBps;
@@ -178,12 +225,14 @@ contract Strategy is AMMStrategyBase {
                 uint256 reqAskBps = (reqAsk / BPS) + VULN_BUFFER_BPS;
                 if (reqAskBps < vulnFloor) reqAskBps = vulnFloor;
                 askBps = reqAskBps;
+                bidBps = bidBps > rebateBps ? (bidBps - rebateBps) : MIN_FEE_BPS;
             } else if (spot > pHat) {
                 uint256 fairOverSpot = wdiv(pHat, spot);
                 uint256 reqBid = WAD > fairOverSpot ? (WAD - fairOverSpot) : 0;
                 uint256 reqBidBps = (reqBid / BPS) + VULN_BUFFER_BPS;
                 if (reqBidBps < vulnFloor) reqBidBps = vulnFloor;
                 bidBps = reqBidBps;
+                askBps = askBps > rebateBps ? (askBps - rebateBps) : MIN_FEE_BPS;
             }
         }
 
@@ -204,14 +253,6 @@ contract Strategy is AMMStrategyBase {
                     bidBps = bidBps > skew ? (bidBps - skew) : MIN_FEE_BPS;
                 }
             }
-        }
-
-        if (firstInStep && likelyArb && shockBps == 0) {
-            bidBps = bidBps > CONT_ARB_REBATE_BPS ? (bidBps - CONT_ARB_REBATE_BPS) : MIN_FEE_BPS;
-            askBps = askBps > CONT_ARB_REBATE_BPS ? (askBps - CONT_ARB_REBATE_BPS) : MIN_FEE_BPS;
-        } else if (!firstInStep && stepTrades >= 2 && shockBps == 0) {
-            bidBps = bidBps > CONT_TAIL_REBATE_BPS ? (bidBps - CONT_TAIL_REBATE_BPS) : MIN_FEE_BPS;
-            askBps = askBps > CONT_TAIL_REBATE_BPS ? (askBps - CONT_TAIL_REBATE_BPS) : MIN_FEE_BPS;
         }
 
         bidBps = _clampBps(bidBps);
@@ -238,11 +279,12 @@ contract Strategy is AMMStrategyBase {
         slots[7] = lambdaEWMA;
         slots[8] = shockBps;
         slots[9] = stepTrades;
-        slots[10] = ratioEWMA;
+        slots[10] = lastArbTs;
+        slots[11] = hazardBps;
     }
 
     function getName() external pure override returns (string memory) {
-        return "BandShield_asymm";
+        return "BandShield_asymm_h";
     }
 
     function _ewma(uint256 prev, uint256 sample, uint256 alpha) internal pure returns (uint256) {

@@ -593,3 +593,413 @@
   - reversions on regressions,
   - expanded random search,
   - direct deterministic hill-climb.
+
+## Iteration 17 — Explicit Arb-Rate State (Informed Flow Probability)
+- Change:
+  - Added new state `arbRateEWMA` (first-trade likely-arb probability).
+  - Used this state to:
+    - increase/decrease base carry fee,
+    - reduce safe-side rebate in high-toxicity windows.
+- Reason:
+  - Directly encode informed-vs-uninformed flow decomposition from first principles.
+- Score before: 531.92 (25 sims)
+- Quick check after change: **502.44** (10 sims)
+- Where edge degraded:
+  - Toxicity feedback appears too aggressive and destabilizes routing/carry balance.
+  - Likely over-penalizes fees from a noisy classifier signal.
+- Failure modes observed:
+  - No runtime/gas failure; severe economic regression.
+- Action taken:
+  - Reverted immediately.
+- Next iteration plan:
+  - Keep best strategy state; continue with external-theory-driven architecture options that do not add high-gain feedback loops.
+
+## Iteration 18 — First-Trade-Only Fair Recentering
+- Change:
+  - Modified fair-anchor recentering so `pHat` updates toward spot only on first trade of step when no arb print is observed.
+  - Ignored continuation-trade spot recentering to reduce retail-noise contamination.
+- Reason:
+  - Improve fair-anchor quality by filtering out continuation retail prints.
+- Score before: 531.92 (25 sims baseline)
+- Quick check after change: **529.75** (10 sims)
+- Where edge degraded:
+  - Anchor became too stale in practice; reduced responsiveness outweighed noise reduction.
+- Failure modes observed:
+  - No runtime/gas failure; clear economic regression.
+- Action taken:
+  - Reverted immediately.
+
+## Iteration 19 — InitialX-Anchored Inventory Skew (Avellaneda-Style q)
+- Change:
+  - Replaced fair-dependent inventory anchor (`xStar = sqrt(k/pHat)`) with fixed initial inventory anchor (`initialX`).
+  - Inventory skew direction set by `(reserveX - initialX)` sign.
+- Reason:
+  - Remove fair-estimation noise from inventory control and align with textbook `q` formulation.
+- Scores:
+  - 10 sims: **536.53** (vs baseline 538.66)
+  - 25 sims: **529.67** (vs baseline 531.92)
+- Where edge degraded:
+  - Fixed anchor appears less effective than fair-relative anchor in this simulator’s routing/arb dynamic.
+- Failure modes observed:
+  - No runtime failure; consistent economic regression.
+- Action taken:
+  - Reverted immediately.
+
+## Iteration 20 — Convex Volatility Pulse Surcharge (LB-Inspired)
+- Change:
+  - Added a dedicated `pulseBps` accumulator with decay and convex fee surcharge:
+    - pulse increases on likely-arb implied returns,
+    - pulse decays when no arb print,
+    - base fee receives linear + quadratic pulse add-on.
+- Reason:
+  - Import Liquidity Book style variable-fee behavior into the stable strategy with minimal additional state.
+- Score before: 531.92 (25 sims baseline)
+- Quick check after change: **518.34** (10 sims)
+- Where edge degraded:
+  - Added pulse made quotes too defensive and likely reduced routing share more than it saved on arb.
+- Failure modes observed:
+  - No runtime failure; strong economic regression.
+- Action taken:
+  - Reverted immediately.
+
+## External Research Update (This Iteration)
+
+### Primary Sources Reviewed
+- Uniswap v4 dynamic-fee / hooks docs:
+  - https://docs.uniswap.org/contracts/v4/concepts/dynamic-fees
+  - https://docs.uniswap.org/contracts/v4/reference/periphery/utils/BaseHook
+- Uniswap v4 hooks concepts:
+  - https://docs.uniswap.org/concepts/protocol/hooks
+- Orca Whirlpools adaptive fee (volatility-accumulator style):
+  - https://docs.orca.so/whirlpools/fees
+- Pancake Infinity dynamic LP fee mechanism:
+  - https://docs.pancakeswap.finance/trade/pancakeswap-infinity/hooks/hook-types/dynamic-lp-fee-hook
+- LVR / optimal fee papers:
+  - https://arxiv.org/pdf/2208.06046
+  - https://arxiv.org/pdf/2305.14604
+- Avellaneda–Stoikov inventory/skew framework:
+  - https://math.nyu.edu/faculty/avellane/HighFrequencyTrading.pdf
+- Trader Joe / Liquidity Book variable fee reference (formula excerpt):
+  - https://github.com/lfj-gg/joe-v2/blob/main/src/LBPair.sol
+  - https://github.com/traderjoe-xyz/LB-Whitepaper/blob/main/Joe%20v2%20Liquidity%20Book%20Whitepaper.pdf
+
+### First-Principles Takeaways
+- Dynamic-fee AMMs in production generally combine:
+  1. volatility accumulator,
+  2. decay windows,
+  3. convex surcharge for burst protection,
+  4. bounded floors/caps to preserve routing.
+- In this competition environment, carry protection for next-step first-trade arb dominates aggressive same-step retail harvesting.
+- High-gain feedback loops (toxicity->fee->routing->toxicity) are very easy to destabilize under strict observability/gas limits.
+- The robust frontier in this simulator appears to favor stable side-shield mechanics with conservative state complexity.
+
+### Research-Driven Branches Tested in This Iteration
+- Explicit informed-flow probability (`arbRate`) state:
+  - severe regression (10-sim 502.44), reverted.
+- First-trade-only fair recentering:
+  - regression (10-sim 529.75), reverted.
+- InitialX-anchored inventory skew (pure Avellaneda q):
+  - regression (25-sim 529.67), reverted.
+- LB-style convex volatility pulse surcharge:
+  - regression (10-sim 518.34), reverted.
+
+### Conclusion From This Research Cycle
+- The best retained strategy remains the tuned BandShield variant at **531.92 (25 sims)**.
+- Breaking beyond this likely requires a genuinely different but still gas-safe policy class; current straightforward imports of production dynamic-fee mechanisms underperform in this simulator when grafted directly.
+
+## Iteration 21 — Auction Clock Carry Premium
+- Change:
+  - Added bounded sigma-scaled carry premium on quote publication (`+1..6 bps`, proportional to sigma) to harden between-step first-trade exposure.
+- Reason:
+  - Test deterministic first-trade protection mechanism from event-order structure.
+- Scores:
+  - 10 sims: **534.22** (vs 538.48 baseline)
+  - 25 sims: **527.31** (vs 531.92 baseline)
+- Where edge degraded:
+  - Premium appears to leak too much same-step routing share versus incremental arb protection.
+- Failure modes observed:
+  - No runtime failure; clear economic regression.
+- Action taken:
+  - Reverted immediately.
+
+## Iteration 22 — Time Machine + Entropy Gauge Stack
+- Change:
+  - Added phase-aware multipliers (recon/endgame) for base fee and safe-side rebate.
+  - Added entropy gauge (`slot[14]` arb observation count) with uncertainty premium `~1/sqrt(N)`.
+- Reason:
+  - Test low-gas first-principles regime/uncertainty controls.
+- Scores:
+  - Time Machine only: 10 sims **538.48**, 25 sims **531.82**
+  - Time Machine + Entropy: 10 sims **538.47**, 25 sims **531.81**
+- Where edge degraded:
+  - Both variants were near-neutral to slightly negative; no measurable improvement over baseline 531.92.
+- Failure modes observed:
+  - No runtime/gas issues.
+- Action taken:
+  - Reverted to baseline before testing other mechanisms.
+
+## Iteration 23 — Weather-Adaptive Safe-Side Rebate
+- Change:
+  - Replaced fixed safe-side rebate with dynamic rebate driven by sigma, lambda, and stress/shock cuts.
+- Reason:
+  - Test regime-aware routing capture (larger rebate in calm/busy, smaller in storm/sparse).
+- Scores:
+  - 10 sims: **532.11**
+  - 25 sims: **525.63**
+- Where edge degraded:
+  - Dynamic rebate was too aggressive/variable and significantly harmed routing/protection balance.
+- Failure modes observed:
+  - No runtime/gas issues; major economic regression.
+- Action taken:
+  - Reverted immediately.
+
+## Iteration 24 — Directional Toxicity + Calculus Blend
+- Change A (Directional Tox only):
+  - Removed symmetric `+tox` in base and applied heavier toxicity on the active side (133% / 75% split by side+streak).
+  - Score:
+    - 10 sims: **538.48**
+    - 25 sims: **531.91**
+  - Net: essentially neutral vs 531.92 baseline.
+
+- Change B (add Calculus Blend on top):
+  - Added bounded optimal-fee proxy `~ sigma/sqrt(lambda)` blended 90/10 with heuristic base.
+  - Score:
+    - 10 sims: **538.27**
+    - 25 sims: **531.42**
+  - Net: regression.
+
+- Failure modes observed:
+  - No runtime/gas issues.
+- Action taken:
+  - Reverted this branch and returned to baseline before next architecture test.
+
+## Iteration 25 — Bayesian/Continuous Arb Probability Engine
+- Change:
+  - Replaced binary `likelyArb` classification with posterior-like `arbProb` from:
+    - first-trade prior,
+    - size signal (vs arb-size cap),
+    - direction alignment (spot vs pHat).
+  - Used `arbProb` to blend fair target (`pEst` vs spot), variance alpha, and toxicity deltas.
+- Reason:
+  - Test continuous-probability updates to avoid hard-threshold misclassification cliffs.
+- Quick score:
+  - 10 sims: **523.28**
+- Where edge degraded:
+  - Probability blend was miscalibrated for this environment and significantly degraded fair/tox update quality.
+- Failure modes observed:
+  - No runtime failure; strong economic regression.
+- Action taken:
+  - Reverted immediately.
+
+## Iteration 26 — Direct 25-Sim Hill-Climb (New Best)
+- Change:
+  - Ran another direct 25-sim objective hill-climb from the current best baseline.
+  - 40 iterations, multi-parameter mutation over 16 constants.
+- New best found:
+  - **532.10** (improved from 531.92)
+  - Constants:
+    - `CORE_BPS=46`
+    - `VOL_MULT_BPS=1031`
+    - `BASE_MIN_BPS=22`
+    - `FLOW_SWING_BPS=3`
+    - `LOWLAM_SIGMA_WIDEN_BPS=7`
+    - `ARMOR_MIN_BPS=112`
+    - `SAFE_SIDE_REBATE_BPS=45`
+    - `VOL_BUFFER_DIV=7`
+    - `ARB_MAX_RATIO_WAD=49*BPS`
+    - `TOX_UP_BPS=4`
+    - `TOX_DOWN_BPS=1`
+    - `TOX_BIG_UP_BPS=3`
+    - `INV_SENS_BPS=294`
+    - `SHOCK_BUMP_BPS=9`
+    - `BIG_BUMP_BPS=4`
+    - `ALPHA_SLOW=82e16`
+- Verification:
+  - 25 sims: **532.10**
+  - 500 sims: **516.25**
+- Notes:
+  - This is a modest but real deterministic improvement over prior best.
+
+## Updated Current Best
+- Strategy file: `Strategy.sol`
+- Best verified local scores in this run:
+  - 25 sims: **532.10**
+  - 500 sims: **516.25**
+
+## Iteration 27 — Hard-Fork Branch: Shadow Normalizer Mirror + Regret Floor
+- Change:
+  - Implemented a new policy class with:
+    - shadow normalizer reserves (`shadowX`, `shadowY`) and routing-share EWMA (`rhoEWMA`),
+    - mirror-based base/rebate feedback toward regime-dependent routing-share targets,
+    - regret-biased uncertainty floor using arb observation count (`arbObsCount`, `1/sqrt(N)` premium).
+- Initial score (un-tuned hard-fork):
+  - 10 sims: **538.74**
+  - 25 sims: **531.98**
+- Tuning run:
+  - 24-candidate direct 25-sim sweep over mirror/regret constants only.
+  - Best tuned hard-fork candidate: **532.08**
+  - Best tuned params (hard-fork branch):
+    - `ALPHA_RHO=16e16`
+    - `RHO_TARGET_CALM=58e16`
+    - `RHO_TARGET_MID=57e16`
+    - `RHO_TARGET_STORM=50e16`
+    - `RHO_SHIFT_MAX_BPS=1`
+    - `RHO_REBATE_MAX_BPS=5`
+    - `SHADOW_RETAIL_DAMP=82e16`
+    - `SAFE_REBATE_MIN_BPS=21`
+    - `SAFE_REBATE_MAX_BPS=75`
+    - `REGRET_UNCERT_K_X10=67`
+    - `REGRET_UNCERT_MAX_BPS=5`
+- Result:
+  - Hard-fork branch did not beat current best non-mirror strategy (532.10).
+- Action:
+  - Revert to the best known strategy configuration (Iteration 26 constants).
+
+## Reversion Check (after Iteration 27)
+- Restored best known non-mirror strategy constants (Iteration 26 set).
+- Verification:
+  - 10 sims: **538.99**
+  - 25 sims: **532.10**
+
+## Iteration 28 — Moon26 Full Rewrite (collapsed)
+- Change:
+  - Replaced baseline with a full 26-slot rewrite (`BandShield_Moon26b`) including:
+    - fast/slow fair anchors,
+    - fast/slow sigma,
+    - fast/slow lambda,
+    - hazard state machine,
+    - PI control,
+    - dynamic rebates + carry premium.
+- Scores:
+  - 10 sims: **399.04**
+  - 25 sims: **410.60**
+- Failure mode:
+  - Severe routing-share collapse from over-defensive control stack.
+- Action:
+  - Abandoned full rewrite, reverted to baseline-anchored approach.
+
+## Iteration 29 — Baseline-Anchored Moon26 Scaffold
+- Change:
+  - Rebuilt as `BandShield_Moon26c`: preserved BandShield v4 economics, then layered bounded multi-timescale/hazard/PI state.
+  - Disabled harmful offside gate and restored baseline rebate behavior.
+- Scores (stabilized scaffold):
+  - 10 sims: **538.47**
+  - 25 sims: **531.79**
+- Outcome:
+  - Recovered baseline neighborhood without regression blowup.
+
+## Iteration 30 — 40-Candidate 10-Sim Constant Search on Moon26c
+- Change:
+  - Randomized 23 constants around the stabilized scaffold (core fee, vol scaling, rebate, inventory, tox, smoothing, weak hazard/PI knobs).
+- Best candidate found:
+  - 10 sims: **538.90**
+  - 25 sims: **531.74**
+- Failure mode:
+  - Strong local ceiling at ~538–539 on 10 sims; no breakout signal.
+
+## Iteration 31 — Structural A/B (Offside/Hazard/PI/Sigma Blend)
+- A/B matrix results (10 sims):
+  - neutral: **538.90**
+  - mode_mild (hazard carry active, offside disabled): **539.00**
+  - mode_offside: **497.96**
+  - mode_offside_pi: **496.33**
+  - offside_only: **519.85**
+  - pi_only: **536.41**
+  - sigma_blend: **538.82**
+  - mode_sigma_blend: **538.91**
+  - full_stack: **494.83**
+- Conclusion:
+  - Offside-gating remains strongly harmful in this simulator.
+  - Mild hazard carry is slightly positive but not a breakthrough.
+
+## Iteration 32 — Focused Hazard/Carry Sweep (60 candidates)
+- Change:
+  - Searched active hazard regime parameters only (ON/OFF hysteresis, hazard increments, carry add, carry rebate, comp cut, low-gain PI).
+- Best candidate:
+  - 10 sims: **539.24**
+  - 25 sims: **532.00**
+- Outcome:
+  - Tiny gain vs 531.92 baseline, still below established best 532.10.
+  - Ceiling persists in high-530s for this branch.
+
+## Reversion to Current Best (no regression shipped)
+- Action:
+  - Restored the known best BandShield v4 constant set from Iteration 26.
+- Verification:
+  - 10 sims: **538.99**
+  - 25 sims: **532.10**
+  - 100 sims: **522.37**
+  - 500 sims: **516.25**
+- Note:
+  - 560+ on 10 sims was not achieved in this cycle despite full rewrite + structural sweeps.
+  - No Rust/Python simulator files were modified.
+
+## External Research Synthesis (This Cycle)
+Sources reviewed and mapped into strategy design:
+- Milionis et al., *Automated Market Making and Loss-Versus-Rebalancing* (arXiv:2208.06046, revised May 27, 2024).
+  - Key takeaway used: informed-flow pickoff (LVR) is the dominant LP drag; protecting first-print stale-price exposure matters more than generic fee volatility.
+- Baggiani et al., *Optimal Dynamic Fees in Automated Market Makers* (arXiv:2506.02869, June 24, 2025).
+  - Key takeaway used: two-fee-regime structure (defensive vs flow-seeking) and linear-in-inventory / external-price-sensitive approximations are theoretically justified.
+- Uniswap v4 hooks documentation (official docs + hook guides).
+  - Key takeaway used: dynamic-fee architecture is naturally event-driven and should remain low-latency and bounded to avoid control-loop instability.
+- Meteora DLMM dynamic fee docs.
+  - Key takeaway used: variable fee linked to volatility accumulator (quadratic pressure under stress) supports hazard bumping in high-vol/low-flow windows.
+
+How this informed experiments:
+- Tried explicit defensive/competitive regime machine (hazard carry), PI-style flow control, and stronger mispricing gates.
+- Empirical result in this simulator: offside/mispricing gates were consistently too punitive to routing share; mild hazard carry helped only marginally.
+- Net outcome: theoretical controls are valid conceptually, but current simulator reward surface heavily favors the calibrated BandShield-v4 style compromise over aggressive regime switching.
+
+## Iteration 33 — Post-BandShield_v4 Breakout Push (Current Cycle)
+
+### Objective
+- Push past the ~540 10-sim plateau, with hard target 550+.
+- Keep simulator code untouched; strategy-only iterations.
+
+### What Changed
+- Ran multiple architectural branches and large randomized sweeps:
+  - `Strategy_alt3` (hazard + confidence-scaled rebate + dynamic arb cap)
+  - `Strategy_clock` (auction-clock carry/rearm idea)
+  - `Strategy_alt2` wide/focused/random/hill sweeps
+  - `Strategy_phase2` (light 3-phase overlay)
+  - `Strategy_alt5` (adaptive arb-classification threshold via trade-ratio EWMA + sigma)
+- Added deterministic sensitivity checks (single-parameter and grid sweeps) to identify the strongest levers before broad searches.
+
+### Key Findings
+- **Strongest single lever this cycle:** arb classification width.
+  - Baseline `ARB_MAX_RATIO_WAD=40bps` scored 540.76 (10 sims).
+  - `ARB_MAX_RATIO_WAD=58bps` raised to 541.56.
+- Hazard/confidence branch improved but stayed in low 541s.
+- Auction-clock carry/rearm branch regressed severely (~516 on 10 sims).
+- Time-phase overlay was near-neutral/slightly positive on 10 sims, negative on 25 sims.
+- New adaptive classifier branch (`alt5`) produced the best verified result in this cycle.
+
+### Best Verified Candidate (Current)
+- File architecture now in `Strategy.sol` (from `Strategy_alt5`):
+  - Adaptive arb cap:
+    - `arbCap = ARB_BASE + ratioEWMA/ARB_RATIO_DIV + sigma/ARB_SIGMA_DIV`, capped.
+  - Maintains profitable asymmetry spine (shield + x* inventory + shocks + smoothing).
+- Scores:
+  - **10 sims: 542.16**
+  - **25 sims: 535.01**
+- This is the highest deterministic 10-sim score achieved in this cycle, but still below 550.
+
+### Failure Modes Observed
+- Heavy offside/mispricing gating still harms routing share too much.
+- Over-defensive carry-first systems collapse flow and underperform.
+- Large architectural forks remain fragile under gas/stack constraints.
+
+### External Research Applied This Cycle
+- Re-checked dynamic-fee principles from:
+  - Uniswap v4 dynamic fees docs (hook-driven event updates)
+  - Meteora dynamic fee docs (volatility-linked fee pressure)
+  - LVR / optimal dynamic-fee papers already in earlier iterations
+- Translation into this simulator:
+  - Keep latency-light fee updates.
+  - Emphasize informed-flow classification quality over extra control complexity.
+
+### Next Iteration Plan
+1. Continue from `Strategy.sol` (alt5 spine) with focused coordinate descent only (not broad random).
+2. Add low-cost direction-consistency weighting to arb classification (probabilistic, not hard gate).
+3. Add minimal uncertainty premium from arb-observation count without adding offside gate complexity.
+4. Re-validate at 10/25/100 after each structural change.
