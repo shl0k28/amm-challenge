@@ -23,7 +23,7 @@ contract Strategy is AMMStrategyBase {
 
     // Defensive core fee: this simulator rewards stale-price protection.
     uint256 private constant CORE_BPS = 48;
-    uint256 private constant VOL_MULT_BPS = 1150; // +1.150 bps per 10 bps sigma
+    uint256 private constant VOL_MULT_BPS = 999; // hill-climbed on 25-sim objective
     uint256 private constant BASE_MIN_BPS = 24;
 
     // Arrival-rate adjustment: slower fills -> widen, faster -> tighten a bit.
@@ -32,10 +32,10 @@ contract Strategy is AMMStrategyBase {
     uint256 private constant LOWLAM_SIGMA_WIDEN_BPS = 8;
     uint256 private constant ARMOR_LAMBDA = WAD / 5; // 0.20 fills/step
     uint256 private constant ARMOR_SIGMA = 9 * BPS;
-    uint256 private constant ARMOR_MIN_BPS = 78;
+    uint256 private constant ARMOR_MIN_BPS = 104;
 
     // Fair/vol estimation from likely-arb prints.
-    uint256 private constant ARB_MAX_RATIO_WAD = 46 * BPS; // <= 0.46% of reserveY
+    uint256 private constant ARB_MAX_RATIO_WAD = 52 * BPS; // <= 0.52% of reserveY
     uint256 private constant ALPHA_P = 35e16; // 0.35
     uint256 private constant ALPHA_VAR = 20e16; // 0.20
     uint256 private constant ALPHA_L = 14e16; // 0.14
@@ -48,8 +48,8 @@ contract Strategy is AMMStrategyBase {
     // If spot < pHat, ask side is vulnerable: fee >= (1 - spot/pHat) + buffers.
     // If spot > pHat, bid side is vulnerable: fee >= (1 - pHat/spot) + buffers.
     uint256 private constant SHIELD_SAFETY_BPS = 0;
-    uint256 private constant VOL_BUFFER_DIV = 10; // add sigma/10 as extra band safety
-    uint256 private constant SAFE_SIDE_REBATE_BPS = 50;
+    uint256 private constant VOL_BUFFER_DIV = 9; // add sigma/9 as extra band safety
+    uint256 private constant SAFE_SIDE_REBATE_BPS = 49;
 
     // Intra-step continuation rebate: if multiple trades hit in same timestamp,
     // later fills are retail-only (arb already happened), so we can undercut.
@@ -72,13 +72,13 @@ contract Strategy is AMMStrategyBase {
     // Event toxicity state: high after first-trade retail, low after arb resets.
     uint256 private constant TOX_MAX_BPS = 28;
     uint256 private constant TOX_DECAY_BPS = 1;
-    uint256 private constant TOX_UP_BPS = 4;
-    uint256 private constant TOX_DOWN_BPS = 3;
-    uint256 private constant TOX_BIG_UP_BPS = 4;
+    uint256 private constant TOX_UP_BPS = 5;
+    uint256 private constant TOX_DOWN_BPS = 4;
+    uint256 private constant TOX_BIG_UP_BPS = 5;
     uint256 private constant CARRY_STEP_BPS = 0;
 
     // Fee smoothing.
-    uint256 private constant ALPHA_SLOW = 74e16; // 0.74
+    uint256 private constant ALPHA_SLOW = 79e16; // 0.79
     uint256 private constant ALPHA_FAST = 100e16; // 1.00
 
     /*//////////////////////////////////////////////////////////////

@@ -405,3 +405,191 @@
   - Additional architectural state appears gas-limited in this environment.
   - Within stable execution constraints, broad search still failed to find a 540+ configuration.
   - Current `Strategy.sol` is set to the strongest candidate found in this run.
+
+## Iteration 9 — VolShield v1 (Ground-Up Volatility-Accumulator Rewrite)
+- Change:
+  - Replaced BandShield architecture with a new design inspired by LB/Meteora-style variable fees:
+    - dynamic likely-arb classifier with fee-scaled size threshold,
+    - volatility accumulator (`vacc`) with decay and convex fee surface,
+    - side shield + inventory skew + bounded continuation rebate.
+- Reason:
+  - Attempt a genuinely different structural model rather than another baseline-parameter sweep.
+- Score before: 531.88 (BandShield baseline, 25 sims)
+- Quick validation score after rewrite: **396.66** (10 sims)
+- Where edge degraded:
+  - Severe adverse-selection leakage and/or routing loss indicates fee surface was miscalibrated to simulator dynamics.
+  - Ground-up model diverged too far from proven carry-defense behavior.
+- Failure modes observed:
+  - No gas/runtime failure; pure economic collapse.
+- Action taken:
+  - Marked as regression and reverted immediately (per no-regression rule).
+- Next iteration plan:
+  - Keep the proven BandShield execution spine intact and introduce one structural innovation at a time (not full replacement), then re-evaluate.
+
+## Reversion Check (after Iteration 9)
+- Restored `Strategy.sol` to baseline (`BandShield_v4`) from `HEAD`.
+- Verification runs:
+  - 10 sims: **538.66**
+  - 25 sims: **531.88**
+- Baseline integrity confirmed before next architecture attempt.
+
+## Iteration 10 — Contextual Continuation-Hazard Rebate (BandShield Spine)
+- Change:
+  - Kept BandShield core, added a new structural layer:
+    - learned continuation probabilities (`contProbArb`, `contProbOther`) from observed same-timestamp follow-through,
+    - context-aware carry rebate bounded by a volatility-linked carry floor.
+- Reason:
+  - Try to harvest same-step retail flow with explicit hazard modeling instead of fixed/no rebate.
+- Scores (10 sims):
+  - `CONT_REBATE_MAX_BPS=8`: **527.17**
+  - `CONT_REBATE_MAX_BPS=3`: **527.28**
+  - `CONT_REBATE_MAX_BPS=0`: **538.66** (back to baseline behavior)
+- Where edge degraded:
+  - Any nonzero continuation rebate materially worsened performance, implying next-step carry protection dominates continuation-harvest gains.
+- Failure modes observed:
+  - No gas/runtime failures; economic regression whenever rebate activated.
+- Action taken:
+  - Marked as failed architecture branch; reverted to baseline logic.
+- Next iteration plan:
+  - Test a different structural improvement: higher-precision arb-state inference (dynamic classification / fair-anchor quality) while preserving defensive carry.
+
+## Iteration 11 — Fee-Aware, Side-Aligned Arb Classifier
+- Change:
+  - Replaced fixed arb-size threshold with a dynamic cap based on active side fee.
+  - Added side-alignment gate (`trade.isBuy => spot >= pHat`, `trade.isSell => spot <= pHat`) for likely-arb filtering.
+- Reason:
+  - Improve fair-anchor update quality by reducing false arb classifications.
+- Score before: baseline 538.66 (10 sims), 531.88 (25 sims)
+- Score after: **517.04** (10 sims)
+- Where edge degraded:
+  - Classifier became too restrictive/misaligned, missing true arb updates and degrading fair/variance estimates.
+- Failure modes observed:
+  - No runtime failure; substantial economic regression.
+- Action taken:
+  - Reverted immediately to baseline.
+- Next iteration plan:
+  - Preserve baseline classifier and target a different structural axis (regime-conditioned safe-side rebate / shield geometry).
+
+## Iteration 12 — Regime-Conditioned Shield Geometry
+- Change:
+  - Kept baseline architecture but changed side-shield mechanics structurally:
+    - dynamic shield buffer (`sigma + shock + tox` based),
+    - dynamic safe-side rebate with calm boost and stress cut,
+    - explicit rebate caps.
+- Reason:
+  - Test whether adaptive routing/protection geometry beats fixed rebate under mixed regimes.
+- Scores:
+  - 10 sims: **538.37** (vs baseline 538.66)
+  - 25 sims: **531.30** (vs baseline 531.88)
+- Where edge degraded:
+  - Adaptive rebate/buffer mapping likely overreacts in non-stress windows, modestly reducing capture.
+- Failure modes observed:
+  - No runtime failures; mild but consistent economic regression.
+- Action taken:
+  - Reverted to baseline.
+- Next iteration plan:
+  - Try a different architecture with explicit two-phase calibration lock (short learn window then mostly fixed regime policy) while keeping code/gas minimal.
+
+## Iteration 13 — Side-Specific Toxicity Memory (Bid/Ask)
+- Change:
+  - Replaced single symmetric `tox` state with two directional states:
+    - `bidTox` (pressure on AMM-buy side)
+    - `askTox` (pressure on AMM-sell side)
+  - Applied toxicity asymmetrically to base fees, while keeping shield/inventory logic.
+- Reason:
+  - Avoid wasting routing share by widening both sides when toxicity is directional.
+- Score before: baseline 538.66 (10 sims)
+- Score after: **531.88** (10 sims)
+- Where edge degraded:
+  - Side memory likely over-penalized active side relative to baseline shield, reducing capture without enough incremental protection.
+- Failure modes observed:
+  - No runtime failures; clear economic regression.
+- Action taken:
+  - Reverted to baseline.
+- Next iteration plan:
+  - Explore architecture that modulates base carry by explicit regime lock/calibration while leaving tactical layers unchanged.
+
+## Iteration 14 — Event-Conditioned Safe-Side Rebate
+- Change:
+  - Kept baseline core but made safe-side rebate event-conditioned:
+    - larger rebate after first-trade likely-arb,
+    - reduced rebate after first-trade non-arb,
+    - additional rebate cut under shock state.
+- Reason:
+  - Concentrate aggressive undercutting in windows where same-step retail continuation is most likely.
+- Scores:
+  - 10 sims: **537.92** (vs baseline 538.66)
+  - 25 sims: **531.19** (vs baseline 531.88)
+- Where edge degraded:
+  - Conditional mapping appears to cut profitable safe-side capture more often than it helps.
+- Failure modes observed:
+  - No runtime failures; mild consistent regression.
+- Action taken:
+  - Reverted to baseline.
+- Next iteration plan:
+  - Explore a distinctly different structural idea with low state overhead: regime lock with one-way adaptive floor (calm unlock, storm lock).
+
+## Iteration 15 — Expanded Deterministic Search on Stable BandShield Family
+- Change:
+  - Ran an expanded parameter search around the stable architecture using generated candidate files (no simulator code edits).
+  - Search dimensions (16 knobs):
+    - `CORE_BPS`, `VOL_MULT_BPS`, `BASE_MIN_BPS`, `FLOW_SWING_BPS`, `LOWLAM_SIGMA_WIDEN_BPS`
+    - `ARMOR_MIN_BPS`, `SAFE_SIDE_REBATE_BPS`, `VOL_BUFFER_DIV`, `ARB_MAX_RATIO_WAD`
+    - `TOX_UP_BPS`, `TOX_DOWN_BPS`, `TOX_BIG_UP_BPS`, `INV_SENS_BPS`
+    - `SHOCK_BUMP_BPS`, `BIG_BUMP_BPS`, `ALPHA_SLOW`
+  - Process:
+    - Stage 1: 40 candidates on 10 sims
+    - Stage 2: top 10 candidates on 25 sims
+- Result:
+  - Best candidate on 25 sims remained the baseline itself:
+    - **531.88** (`idx=0`, baseline constants)
+  - Best non-baseline 25-sim score observed: **531.85**.
+- Key finding:
+  - Higher 10-sim peaks (~539.1) did not translate to better 25-sim scores.
+  - The deterministic 25-sim frontier in this architecture remains ~531-532.
+- Artifacts:
+  - Stage 1 CSV: `/var/folders/3n/7b4qqlzd49s3jd6fbh47nh0w0000gn/T/arch_search3.4ughftvb/stage1.csv`
+  - Stage 2 CSV: `/var/folders/3n/7b4qqlzd49s3jd6fbh47nh0w0000gn/T/arch_search3.4ughftvb/stage2_25.csv`
+
+## Current Best (Verified)
+- Strategy file: `Strategy.sol` (BandShield_v4 baseline family)
+- Verified score: **531.92** on 25 sims
+- Verification command:
+  - `./.venv313/bin/python -m amm_competition.cli run Strategy.sol --simulations 25`
+
+## Iteration 16 — Direct 25-Sim Hill-Climb (Deterministic Objective)
+- Change:
+  - Ran simulated-annealing style hill-climb directly against the **25-sim** score (not 10-sim proxy), mutating 16 constants.
+  - 36 deterministic iterations around baseline.
+- Reason:
+  - Final attempt to find a hidden local basin that proxy searches may miss.
+- Outcome:
+  - New best found: **531.92** (up from 531.88, +0.04)
+  - Best config discovered:
+    - `CORE_BPS=48`
+    - `VOL_MULT_BPS=999`
+    - `BASE_MIN_BPS=24`
+    - `FLOW_SWING_BPS=6`
+    - `LOWLAM_SIGMA_WIDEN_BPS=8`
+    - `ARMOR_MIN_BPS=104`
+    - `SAFE_SIDE_REBATE_BPS=49`
+    - `VOL_BUFFER_DIV=9`
+    - `ARB_MAX_RATIO_WAD=52*BPS`
+    - `TOX_UP_BPS=5`
+    - `TOX_DOWN_BPS=4`
+    - `TOX_BIG_UP_BPS=5`
+    - `INV_SENS_BPS=201`
+    - `SHOCK_BUMP_BPS=10`
+    - `BIG_BUMP_BPS=4`
+    - `ALPHA_SLOW=79e16`
+- Verification:
+  - 25 sims: **531.92**
+  - 500 sims: **516.14**
+
+## Updated Best-In-Session Status
+- Best local 25-sim achieved in this run: **531.92**
+- Target 540+ remains unmet despite:
+  - multiple architectural rewrites,
+  - reversions on regressions,
+  - expanded random search,
+  - direct deterministic hill-climb.
