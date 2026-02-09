@@ -1003,3 +1003,638 @@ How this informed experiments:
 2. Add low-cost direction-consistency weighting to arb classification (probabilistic, not hard gate).
 3. Add minimal uncertainty premium from arb-observation count without adding offside gate complexity.
 4. Re-validate at 10/25/100 after each structural change.
+
+## Iteration 34 — Plateau Breakout Attempt (Moonshot + Broad Search)
+
+### Objective
+- Hard push for 550+ on local 10 sims using architecture-level changes, then broad parameter search.
+- Constraint respected: strategy-only edits (no Rust/Python simulator file edits).
+
+### Baseline at Start
+- Working baseline: `Strategy.sol` (direction-aware arb classifier)
+- Verified start score:
+  - 10 sims: **546.24**
+
+### Branch A — Full 26-slot Moonshot (multi-timescale + hazard + PI)
+- Change:
+  - Built a ground-up 22+ slot design with:
+    - fast/slow fair + variance + lambda,
+    - hazard EWMA with hysteresis mode switching,
+    - PI-style lambda targeting,
+    - directional streak overlays.
+- Result:
+  - **Failed runtime with Out-of-Gas** on simulator.
+- Failure mode:
+  - Control richness exceeded practical gas/runtime limits.
+- Action:
+  - Discarded branch.
+
+### Branch B — Lightweight Hazard Regime on Winner Spine
+- Change:
+  - Added compact hazard slot and mode-like defensive floor shaping to baseline.
+- Result:
+  - 10 sims around **546.42–546.44** after tuning.
+- Failure mode:
+  - Flat response surface; no breakout despite multiple sweeps.
+- Action:
+  - Kept as reference, not final.
+
+### Branch C — Volatility Accumulator (LFJ/Meteora-inspired)
+- Change:
+  - Added decaying volatility accumulator with quadratic fee pressure (`volAcc^2` term).
+- Result:
+  - Initial config: **533.56** (10 sims)
+  - Softened config: **542.31** (10 sims)
+- Failure mode:
+  - Over-defensive convex term overcharged and reduced routing share.
+- Action:
+  - Discarded branch.
+
+### Branch D — Continuous Arb-Probability Weighting (Bayesian-lite)
+- Change:
+  - Replaced hard arb classification with weighted arb probability for pHat/var/lambda updates.
+- Result:
+  - **543.87** (10 sims)
+- Failure mode:
+  - Smearing arb inference degraded fair anchor precision vs hard-gated classifier.
+- Action:
+  - Discarded branch.
+
+### Branch E — Dual-timescale Sigma (Low-cost Structural Add)
+- Change:
+  - Added slow variance state + blended sigma.
+  - Moved lambda update to non-arb first-in-step prints only.
+  - Tuned arb cap + vuln buffer around this branch.
+- Best verified configuration:
+  - `ARB_BASE_RATIO_WAD = 19 * BPS`
+  - `ARB_SIGMA_DIV = 7`
+  - `VULN_BUFFER_BPS = 0`
+  - plus dual-sigma blend from `Strategy_alt15`.
+- Score:
+  - **10 sims: 546.64**
+  - **25 sims: 538.98**
+
+### Broad Search Runs (completed in this cycle)
+- Focused grids on strongest levers (`ARB_BASE`, `ARB_SIGMA_DIV`, `VULN_BUFFER`, rebate knobs):
+  - Best observed from focused grid: **546.64** (10 sims).
+- Randomized 40-candidate search over 20+ constants (3-sim screen, top-10 on 10 sims):
+  - Best validated: **544.98** (10 sims), below champion candidate.
+
+### External Research Applied in This Cycle
+- Uniswap v4 whitepaper / docs (dynamic fees via hooks, bounded event-driven controls).
+- LFJ (Trader Joe Liquidity Book) dynamic fee docs (volatility accumulator + quadratic variable fee term).
+- LVR literature context (loss-vs-rebalancing scaling and informed-flow protection).
+- Empirical takeaway for this simulator:
+  - Aggressive control stacks and convex fee modules underperform unless very tightly constrained.
+  - Precision arb classification + low-gas asymmetry remains the dominant edge driver.
+
+### Net Outcome
+- Target `555` on 10 sims **not reached** in this cycle.
+- New local best in this cycle:
+  - **546.64 (10 sims)**
+  - **538.98 (25 sims)**
+- `Strategy.sol` updated to this best verified candidate.
+
+## Iteration 35 — Final Promotion + Stability Validation
+
+### Promoted Strategy
+- Promoted the best candidate from this cycle into `Strategy.sol`:
+  - Based on dual-timescale variance blend branch (`alt15`), with tuned constants:
+    - `ARB_BASE_RATIO_WAD = 19 * BPS`
+    - `ARB_SIGMA_DIV = 7`
+    - `VULN_BUFFER_BPS = 0`
+  - Plus:
+    - slow variance state (`varSlow`) blended with fast variance for sigma,
+    - lambda update restricted to non-arb first-in-step events.
+
+### Verified Scores (promoted `Strategy.sol`)
+- 10 sims: **546.64**
+- 25 sims: **538.98**
+- 100 sims: **529.28**
+- 500 sims: **522.63**
+
+### Delta vs prior best baseline neighborhood
+- 10 sims: +0.40 vs 546.24
+- 25 sims: +0.20 vs 538.78 (prior local best in this branch family)
+- 500 sims: materially higher than earlier 516.x class runs from prior cycles.
+
+### Outcome
+- Hard 555 target on local 10-sim still not reached.
+- Kept the highest-performing and most stable candidate found in this run.
+
+## Iteration 36 — Online Failure Root Cause + Deploy-Safe Frontier Reset
+
+### Root Cause (online "Stream ended without completion")
+- Diagnosed by forcing local deploy gas limits on candidate bytecode.
+- Finding: strategies around ~4.8KB+ creation bytecode failed at `1,000,000` deploy gas despite passing validation/compilation.
+- This exactly matches the online symptom: validation passes, simulation stream dies immediately.
+
+### Evidence
+- `Strategy_align_mix_best.sol` (creation ~4911 bytes): fails deploy at 1.0M, succeeds ~1.15M.
+- `Strategy_alt12_localbest.sol` (creation ~4892 bytes): fails at 1.0M, succeeds ~1.15M.
+- Deploy-safe branch around 4.2KB–4.4KB creation bytecode deploys reliably at 1.0M.
+
+### Action
+- Kept strategy work inside deploy-safe bytecode envelope while optimizing edge.
+
+## Iteration 37 — Deploy-Safe Branch Promotion and Broad Bench
+
+### Baseline Promotion
+- Promoted compact align-lite branch into `Strategy.sol`:
+  - score: **547.10 (10 sims)**
+  - deploy-safe at 1.0M
+
+### Full Local Variant Sweep
+- Benchmarked all local `Strategy*.sol` files at 10 sims.
+- Best raw local score found in repo: `Strategy_align_mix_best.sol` at **547.10**, but not deploy-safe.
+- Best deploy-safe family remained the compact align-lite around **546.59–547.10**.
+
+## Iteration 38 — Structural Tries (Rejected)
+
+Tried and reverted after regressions:
+- Directional toxicity memory (extra slot):
+  - 10 sims ~**546.74** (regressed)
+  - also increased size enough to fail 1.0M in one configuration.
+- Lambda-adaptive arb-cap modifier:
+  - 10 sims ~**543.93** (major regression)
+  - deploy 1.0M fail in tested config.
+- Hazard-on-arb state bump:
+  - 10 sims ~**542.03** (major regression), deploy fail.
+- Directional streak fee bump:
+  - 10 sims ~**546.12** (regression), deploy-safe but rejected.
+- Asymmetric continuation rebate after likely-arb first print:
+  - 10 sims ~**545.63** (regression), rejected.
+
+Conclusion: these added controls over-defend and lose routing share in this simulator.
+
+## Iteration 39 — Compact Nonlinear Lambda Form (Kept)
+
+### Change
+- Replaced piecewise lambda tightening/widening block with compact nonlinear scaling:
+  - `safeBps = safeBps * (LAMBDA_REF + ARMOR_LAMBDA) / (lambdaEWMA + ARMOR_LAMBDA)`
+
+### Result
+- Edge unchanged vs prior best neighborhood (to 2 decimals), but bytecode dropped materially.
+- This created extra bytecode headroom for further tests while keeping behavior stable.
+
+## Iteration 40 — Phase Overlay Refinement + Local Interaction Search
+
+### Phase overlay tuning
+- Added and tuned lightweight 3-phase additives (recon/endgame).
+- Best tuned set:
+  - `RECON_END_TS = 188`
+  - `RECON_SAFE_ADD_BPS = 2`
+  - `RECON_VULN_ADD_BPS = 10`
+  - `ENDGAME_START_TS = 9681`
+  - `END_SAFE_ADD_BPS = 3`
+  - `END_VULN_ADD_BPS = 7`
+
+### 1D + interaction sweeps
+- Single and pairwise sweeps found small positive moves in:
+  - `ARB_SIGMA_DIV = 10`
+  - `INV_SENS_BPS = 132`
+  - `SHOCK_RATIO_WAD = 96 * BPS`
+
+### Promoted constants
+- `ARB_SIGMA_DIV = 10`
+- `INV_SENS_BPS = 132`
+- `SHOCK_RATIO_WAD = 96 * BPS`
+- plus phase constants above.
+
+### Final verified scores (current `Strategy.sol`)
+- **10 sims: 547.21**
+- **25 sims: 539.25**
+- **99 sims: 529.44**
+- Creation bytecode size: **4147**
+- Deploy at 1.0M gas: **PASS**
+
+## Current Ceiling Assessment
+- Despite multiple structural additions and extensive tuning, this deploy-safe architecture family is currently plateauing around **547.2** on deterministic 10-sim local seeds.
+- The hard 555 local target was not reached in this cycle.
+- Most high-control mechanisms (hazard/offside/toxicity stacks) consistently regress due routing-share loss.
+
+## Next High-Conviction Path
+1. Build a second compact family centered on cleaner arb probability estimation (continuous weight, but very lightweight) without hazard/offside stacks.
+2. Keep bytecode under ~4.35KB to preserve online deploy reliability.
+3. Run multi-stage search (3 -> 10 -> 25 sims) only on two strongest families to avoid search dilution.
+
+## Iteration 41 — Long-Horizon Pivot (online-gap response)
+
+### Trigger
+- User reported online 1000-sim score ~514.47 while local short-horizon remained higher.
+- Interpreted as robustness/generalization gap, not validator failure.
+
+### Approach
+- Switched optimization objective from 10-sim peak to long-horizon stability (99/500 proxies).
+- Preserved deploy safety at 1,000,000 gas as a hard constraint.
+
+### Structural change introduced
+- Added stale-aware `pHat` recentering with `lastArbTs`:
+  - On non-arb trades, recenter alpha increases with time since last arb event.
+  - Rationale: reduce stale-fair drift risk in long no-arb intervals (tail loss control).
+- Kept the nonlinear lambda scaling block (compact form) due same-or-better score with smaller bytecode.
+
+### Intermediate outcomes
+- Initial stale-aware variant:
+  - 10: 546.52
+  - 25: 539.13
+  - 99: 529.50
+  - 500: 522.98
+- Combined stale-aware + robust constant cluster briefly improved 99 but exceeded deploy gas (>1.0M).
+- Removed explicit recon/endgame branch code (not just constants), recovering deploy safety and improving robustness.
+
+## Iteration 42 — Robustness Search (50/99/500)
+
+### Search framework
+- Random and targeted sweeps with objective priority:
+  - 99-sim first, then 500-sim confirmation.
+- Kept bytecode under deploy-safe envelope; rejected any candidate failing 1.0M deploy.
+
+### What moved the needle
+- Better long-run performance came from:
+  - faster stale recenter adaptation,
+  - slightly wider shock trigger threshold,
+  - moderate inventory sensitivity,
+  - moderate arb-side continuation rebate.
+
+### Final promoted constants
+- `ARB_SIGMA_DIV = 9`
+- `SAFE_VOL_MULT_BPS = 2400`
+- `INV_SENS_BPS = 128`
+- `SHOCK_RATIO_WAD = 106 * BPS`
+- `CONT_ARB_REBATE_BPS = 5`
+- `PHAT_RECENTER_BASE = 4e16`
+- `PHAT_RECENTER_PER_STEP = 16e14`
+- `PHAT_RECENTER_MAX = 20e16`
+- Other robust constants retained from prior branch.
+
+### Final verified metrics (`Strategy.sol`)
+- 10 sims: **546.91**
+- 25 sims: **539.67**
+- 99 sims: **529.85**
+- 500 sims: **523.25**
+- Creation bytecode: **4156**
+- Deploy at 1.0M gas: **PASS**
+
+### Delta vs previous promoted baseline
+- Previous promoted (before this robustness pivot):
+  - 10: 547.21
+  - 25: 539.25
+  - 99: 529.36
+  - 500: 522.78
+- New:
+  - 10: 546.91 (**-0.30**)
+  - 25: 539.67 (**+0.42**)
+  - 99: 529.85 (**+0.49**)
+  - 500: 523.25 (**+0.47**)
+
+Interpretation: short-horizon peak reduced modestly while long-horizon robustness improved consistently.
+
+## External Research Applied (this cycle)
+- Uniswap v4 dynamic fees docs / whitepaper: hook-driven per-swap fee adaptation and bounded control loops.
+- Meteora DLMM fee model: volatility-linked fee adaptation with accumulator-style behavior.
+- Orca adaptive fee docs: adaptive fee updates tied to observed volatility proxies.
+- Aave V3.1 governance interest-rate model discussion: kinked/defensive pricing under stress (inspired convex defense thought process).
+- Morpho AdaptiveCurveIRM blog: state-aware dynamic pricing with stability-vs-responsiveness tradeoff.
+
+### Practical takeaway from sources in this simulator
+- Heavy multi-controller stacks often over-defend and lose routing share.
+- Best improvements came from compact stateful defenses that specifically reduce stale-price tail losses while keeping fee responsiveness bounded.
+
+## Iteration 43 — Final Robustness Consolidation
+
+### Structural retention
+- Kept stale-aware pHat recenter module (`lastArbTs` + adaptive recenter alpha).
+- Kept compact nonlinear lambda scaling block.
+- Removed explicit recon/endgame branch logic (bytecode + robustness win).
+
+### Focused tuning (long-horizon objective)
+- Used 99/500 as primary objective, with deploy safety constraint preserved.
+- Tuned recenter response and shock/inventory/arb-classification knobs.
+
+### Final selected settings (from coordinate + combo search)
+- `ARB_SIGMA_DIV = 9`
+- `SAFE_VOL_MULT_BPS = 2400`
+- `INV_SENS_BPS = 128`
+- `SHOCK_RATIO_WAD = 106 * BPS`
+- `CONT_ARB_REBATE_BPS = 5`
+- `PHAT_RECENTER_BASE = 4e16`
+- `PHAT_RECENTER_PER_STEP = 16e14`
+- `PHAT_RECENTER_MAX = 20e16`
+
+### Rejected in this pass
+- Soft offside/kink additive bump on safe side (mispricing-based):
+  - worsened 10/25/99 and was reverted.
+
+### Final verification (current `Strategy.sol`)
+- 10 sims: **546.91**
+- 25 sims: **539.67**
+- 99 sims: **529.85**
+- 500 sims: **523.25**
+- Bytecode size: **4156**
+- Deploy gas @ 1,000,000: **PASS**
+
+### Net effect vs pre-pivot baseline
+- Improved robustness objectives while preserving online deploy safety:
+  - 25: +0.42
+  - 99: +0.49
+  - 500: +0.47
+- Small tradeoff in 10-sim peak (-0.30), consistent with reduced overfitting.
+
+## Iteration 44 — QCSC Ground-Up Rewrite (theory-first carry/continuation)
+
+### Change
+- Replaced `Strategy.sol` with a fresh architecture implementing:
+  - continuation competition quote,
+  - carry premium blended by continuation probability,
+  - hazard state + uncertainty premium,
+  - dynamic weather rebate.
+
+### Result
+- 10 sims: **529.49** (major regression).
+
+### Diagnosis
+- The full rewrite discarded too many calibrated priors from the robust baseline.
+- Carry/continuation blend and hazard constants were materially miscalibrated.
+- This was a structural miss, not a compile/runtime issue.
+
+### Action
+- Reverted to robust baseline (`Strategy_coord99_best.sol`).
+
+## Iteration 45 — Baseline Random Constant Search (36 candidates)
+
+### Change
+- Randomized key baseline constants (vol slope, vulnerable floor/divider, inventory skew, continuation rebates, shock, recenter, smoothing).
+
+### Result
+- Best candidate: **546.62** (10 sims), below baseline **546.91**.
+
+### Diagnosis
+- Current robust constant set remains near local optimum in this family.
+- Broad random perturbations mostly regress into 542–546 band.
+
+## Iteration 46 — Uncertainty Gauge on Baseline Spine
+
+### Change
+- Added arb observation count + uncertainty premium in safe/vulnerable fees.
+- Tried confidence-scaled continuation rebates.
+
+### Results
+- Initial compile issue (`viaIR` stack too deep), simplified implementation.
+- Simplified variant: **546.81** (10 sims), slight regression.
+- Sweep over uncertainty params (`k`, cap): best = **546.91** at `k=0` (module effectively disabled).
+
+### Diagnosis
+- In this environment, this uncertainty overlay did not add value beyond existing stale-aware recenter + shield.
+
+### Action
+- Reverted to baseline.
+
+## Iteration 47 — Full Strategy Library Benchmark (all local variants)
+
+### Change
+- Ran 10-sim benchmark for all `Strategy*.sol` variants in repo.
+
+### Top Results
+- `Strategy_tmp_best_phase.sol`: **547.11**
+- `Strategy_align_mix_best.sol`: **547.10**
+- `Strategy.sol` / `Strategy_coord99_best.sol`: **546.91**
+
+### Interpretation
+- Confirmed global local ceiling in current repo families is ~547.1.
+- No existing branch close to 555.
+
+## Iteration 48 — Phase-Family Random Search (80 candidates around top file)
+
+### Change
+- Randomized 20+ constants around `Strategy_tmp_best_phase.sol` architecture.
+
+### Result
+- Best found: **546.92** (below family best 547.11).
+
+### Diagnosis
+- The phase-family optimum is narrow; randomized drift degrades quickly.
+- No evidence of hidden >550 pocket in that neighborhood.
+
+## Iteration 49 — 26-Slot Moonshot Revisit (gas root cause + runtime test)
+
+### Finding: root cause of moonshot validation failure
+- `Strategy_moonshot.sol` failed validation with:
+  - `afterInitialize` out-of-gas at 250k.
+- Root cause: too many zero→nonzero SSTORE writes in initialization path.
+
+### Change
+- Built lazy-init variants with fewer `afterInitialize` writes (`Strategy_moonshot_initfix.sol`, `Strategy_moonshot_initfix2.sol`).
+
+### Result
+- Validation passed.
+- 10 sims remained very low: **368.84**.
+
+### Diagnosis
+- Failure was not only init gas; the architecture itself is economically miscalibrated in this simulator.
+
+## Iteration 50 — Continuous Vulnerable-Floor Regime Module
+
+### Change
+- Added continuous lambda-dependent vulnerable floor and calm/storm vulnerable adjustments to baseline.
+- Performed 112-candidate sweep over `(VULN_LAMBDA_ADD, CALM_VULN_CUT, STORM_VULN_ADD)`.
+
+### Result
+- Best: **546.91** (exact baseline), with many settings regressing to 546.77–546.89.
+
+### Diagnosis
+- Module is neutral or negative on deterministic 10-sim seeds.
+- Flow-triggered adjustments did not materially activate/useful signal under this baseline.
+
+---
+
+## Current Best Frontier (this cycle)
+
+### Best 10-sim local
+- `Strategy_tmp_best_phase.sol`: **547.11**
+
+### Best robust long-horizon among promoted candidates
+- `Strategy_coord99_best.sol` / current robust baseline:
+  - 10: **546.91**
+  - 25: **539.67**
+  - 99: **529.85**
+  - 500: **523.25**
+
+### Alternative (10-sim peak, weaker long-horizon)
+- `Strategy_tmp_best_phase.sol`:
+  - 10: **547.11**
+  - 25: **539.25**
+  - 99: **529.36**
+  - 500: **522.82**
+
+## Ceiling Update
+- Despite multiple structural branches and large sweeps, no candidate exceeded **547.11** local 10-sim in this codebase cycle.
+- The requested 555 target was not reached in this iteration set.
+
+## Highest-Conviction Next Path
+1. Refactor `afterSwap` into 2–3 helper functions to break `viaIR` stack limits while staying gas-safe.
+2. Re-introduce higher-ceiling modules in compact form:
+   - carry/continuation split,
+   - hazard hysteresis,
+   - lightweight PI flow controller.
+3. Constrain `afterInitialize` to <=10 writes to avoid 250k init OOG.
+4. Optimize with staged objective: 10-sim candidate discovery -> 25/99/500 robustness filter.
+
+## Iteration 51 — Full 99-Sim Candidate Comparison + Permutation Search (High-Sim Objective)
+
+### Motivation
+- User request: prioritize comparisons at higher simulation counts when 10-sim values are similar.
+- Implemented a full candidate ranking and combinatorial parameter sweeps with **99 sims as the objective**.
+
+### Step A: Full candidate ranking (`Strategy*.sol` at 99 sims)
+- Ran all local strategy files through `99` simulations.
+- Top results:
+  1. `Strategy.sol` = **529.85**
+  2. `Strategy_coord99_best.sol` = **529.85**
+  3. `Strategy_candidate_robust.sol` = **529.55**
+  4. `Strategy_coord_from_tmp.sol` = **529.52**
+  5. `Strategy_align_mix_best.sol` = **529.47**
+  6. `Strategy_tmp_best_phase.sol` = **529.36**
+- Many 10-sim-competitive variants degraded materially at 99 sims (e.g., several in 515–525 range; moonshot failures).
+
+### Step B: 99-sim permutation matrix A (32 combos)
+- Base architecture: current `Strategy.sol`.
+- Exhaustive grid across:
+  - `ARB_SIGMA_DIV ∈ {8,9}`
+  - `SAFE_VOL_MULT_BPS ∈ {2347,2400}`
+  - `INV_SENS_BPS ∈ {124,128}`
+  - `SHOCK_RATIO_WAD ∈ {102,106}`
+  - `CONT_ARB_REBATE_BPS ∈ {4,5}`
+- Best result: **529.85** (tie only; no strict improvement).
+
+### Step C: 99-sim permutation matrix B (32 combos)
+- Exhaustive grid across:
+  - `ARB_SIGMA_DIV ∈ {9,10}`
+  - `SAFE_VOL_MULT_BPS ∈ {2400,2538}`
+  - `INV_SENS_BPS ∈ {124,128}`
+  - `SHOCK_RATIO_WAD ∈ {102,106}`
+  - `SHOCK_BUMP_BPS ∈ {5,6}`
+- Best result: **529.85** (tie only; no strict improvement).
+
+### Step D: Tie-break on longer horizon
+- Tested representative tie-best candidates on 25 and 500 sims.
+- Results matched baseline:
+  - 25 sims: **539.67**
+  - 500 sims: **523.25**
+
+### Conclusion
+- The requested high-sim methodology was implemented:
+  - full candidate comparison at 99,
+  - then exhaustive 99-sim permutation combinations around top parameter sets,
+  - then 25/500 tie-break confirmation.
+- No candidate strictly beat current `Strategy.sol` on high-sim objectives in this cycle.
+
+### Final status
+- Keep `Strategy.sol` as current robust best:
+  - 10: **546.91**
+  - 25: **539.67**
+  - 99: **529.85**
+  - 500: **523.25**
+
+## Iteration 52 — Structural Branches + Deep High-Sim Search (Post-523 Plateau)
+
+### Baseline Re-anchor (updated simulator)
+- `Strategy.sol` rechecked: 10=`546.91`, 99=`529.85`, 500=`523.25`.
+
+### Structural branch tests (new families)
+- `Strategy_hazard_mode.sol` (hazard state machine, mode switching): 10=`533.88` (regression).
+- `Strategy_clock2.sol` (aggressive carry/continuation scheduling): 10=`542.83` (regression).
+- `Strategy_prob.sol` (soft arb-probability weighting): compile-fixed variant reached 10=`543.38` (regression).
+- `Strategy_barbell.sol` (low safe/high vuln): 10=`544.55` (regression).
+- `Strategy_multiscale.sol` (fast+slow sigma/lambda blend): 10=`546.80`, 99=`529.89`, 500=`523.27` (small robustness gain, not best).
+- `Strategy_lowlambda_guard.sol` (explicit low-lambda surcharge): 10=`546.91`, 99=`529.85` (neutral).
+- `Strategy_stale_tax.sol` (staleness uncertainty tax): 10=`546.88`, 99=`529.85` (neutral).
+- `Strategy_retail_step_compete.sol` (guarded continuation compete only when first trade non-arb): 10=`546.73`, 99=`529.78` (regression).
+
+### High-sim parameter sweeps
+1. Randomized 140-candidate sweep around baseline constants:
+   - Best 10-sim candidate: `546.98`.
+   - Best 99-sim candidate: `529.86`.
+   - Best 500 among promoted finalists: `523.32`.
+2. Targeted 180-candidate basin sweep around best-500 neighborhood (`25 -> 99 -> 500` funnel):
+   - Best 99 candidate: `529.90`.
+   - Best 500 candidate: **`523.40`**.
+3. Focused probe around safe/vuln+inventory tradeoff near new basin:
+   - Top pocket tied at 10=`546.92`, 99=`529.90`, 500=`523.40`.
+
+### New best configuration promoted
+- Promoted to `Strategy.sol` (renamed strategy to `BandShield_v5`).
+- Verified:
+  - 10 sims: **`546.92`**
+  - 25 sims: **`539.60`**
+  - 99 sims: **`529.90`**
+  - 500 sims: **`523.40`**
+
+### Best-known constants in this cycle (delta vs old Strategy.sol)
+- `ARB_SIGMA_DIV: 9 -> 11`
+- `ALPHA_P: 37e16 -> 35e16`
+- `SAFE_VOL_MULT_BPS: 2400 -> 2300`
+- `VULN_SIGMA_DIV: 16 -> 18`
+- `ARMOR_SAFE_FLOOR: 17 -> 15`
+- `INV_SENS_BPS: 128 -> 160`
+- `INV_MAX_SKEW_BPS: 40 -> 38`
+- `SHOCK_RATIO_WAD: 106 -> 112`
+- `SHOCK_BUMP_BPS: 6 -> 4`
+- `SHOCK_MAX_BPS: 18 -> 14`
+- `PHAT_RECENTER_PER_STEP: 16e14 -> 12e14`
+- `PHAT_RECENTER_MAX: 20e16 -> 18e16`
+- `ALPHA_SLOW: 78e16 -> 77e16`
+
+### Diagnostic takeaways
+- This simulator remains strongly flow-driven: edge correlates much more with effective fill/routing than with raw sigma level.
+- Multiple structural additions improved 99 marginally but did not produce a step-change at 500.
+- Current observed ceiling in this workspace family moved from 523.25 -> **523.40** on 500, still materially below requested 530 target.
+- Continuing likely requires a genuinely new fee policy family (not another local perturbation of the current asymmetric shield spine).
+
+## Iteration 53 — Quick Parameter Edits Around Ghost Strategy
+
+### Input architecture
+- Started from `Strategy_ghost_tuned.sol` (already strong):
+  - 10 = 552.95
+  - 25 = 545.74
+  - 99 = 536.44
+  - 500 = 530.21
+
+### Quick two-stage tune (fast pass)
+1. Stage 1 (27 combos): tuned
+- `PHAT_ALPHA` in {0.24, 0.28, 0.32}
+- `LAMBDA_DECAY` in {0.994, 0.995, 0.996}
+- `TOX_BLEND_DECAY` in {0.12, 0.15, 0.18}
+
+Best Stage 1 pocket:
+- `PHAT_ALPHA = 0.28`
+- `LAMBDA_DECAY = 0.996`
+- `TOX_BLEND_DECAY = 0.12`
+- 10-sim = 553.13
+
+2. Stage 2 (9 combos around stage1 winner): tuned
+- `FLOW_SIZE_COEF` in {5200, 5600, 6000} * BPS
+- `ACT_COEF` in {50000, 53500, 57000} * BPS
+
+Best selected candidate:
+- `FLOW_SIZE_COEF = 5600 * BPS`
+- `ACT_COEF = 53500 * BPS`
+- (same as baseline tuned values for these two)
+
+### Final candidate
+- File: `Strategy_ghost_quick.sol`
+- Promoted into `Strategy.sol`
+- Name: `BandShield_ghost_quick`
+
+### Scores
+- 10 sims: **553.13**
+- 25 sims: **545.91**
+- 99 sims: **536.56**
+- 500 sims: **530.28**
+
+### Net effect
+- Improvement over prior ghost-tuned baseline:
+  - +0.18 (10)
+  - +0.17 (25)
+  - +0.12 (99)
+  - +0.07 (500)

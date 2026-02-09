@@ -235,6 +235,6 @@ contract Strategy is AMMStrategyBase {
     }
 
     function getName() external pure override returns (string memory) {
-        return "BandShield_ghost";
+        return "BandShield_ghost_quick";
     }
 }
