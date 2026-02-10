@@ -38,10 +38,13 @@ contract Strategy is AMMStrategyBase {
     uint256 constant FLOW_SIZE_COEF = 5600 * BPS;
     uint256 constant TOX_COEF = 200 * BPS;
     uint256 constant TOX_QUAD_COEF = 20000 * BPS;
-    uint256 constant ACT_COEF = 42000 * BPS;
-    uint256 constant DIR_COEF = 90 * BPS;
+    uint256 constant ACT_COEF = 56000 * BPS;
+    uint256 constant DIR_COEF = 70 * BPS;
     uint256 constant DIR_TOX_COEF = 20 * BPS;
     uint256 constant STALE_DIR_COEF = 6900 * BPS;
+    uint256 constant CARRY_SIG_COEF = 150000000000000000;
+    uint256 constant CARRY_TOX_COEF = 15000000000000000;
+    uint256 constant CARRY_MAX = 6 * BPS;
     uint256 constant TAIL_KNEE = 700 * BPS;
     uint256 constant TAIL_SLOPE = 900000000000000000; // 0.90
 
@@ -203,6 +206,13 @@ contract Strategy is AMMStrategyBase {
 
         bidFee = clampFee(_compressTail(bidFee));
         askFee = clampFee(_compressTail(askFee));
+
+        if (likelyArb) {
+            uint256 carry = wmul(CARRY_SIG_COEF, sigmaHat) + wmul(CARRY_TOX_COEF, toxSignal);
+            if (carry > CARRY_MAX) carry = CARRY_MAX;
+            bidFee = clampFee(bidFee + carry);
+            askFee = clampFee(askFee + carry);
+        }
 
         stepTradeCount = stepTradeCount + 1;
         if (stepTradeCount > STEP_COUNT_CAP) stepTradeCount = STEP_COUNT_CAP;

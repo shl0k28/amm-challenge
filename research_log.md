@@ -1638,3 +1638,121 @@ Best selected candidate:
   - +0.17 (25)
   - +0.12 (99)
   - +0.07 (500)
+
+## Iteration 54 — Arb-Classification Branch + Deep Search (553.13 -> 555.89)
+
+### Baseline at start
+- `Strategy.sol` (`BandShield_ghost`) at start of this iteration:
+  - 10: **553.13**
+  - 25: **545.91**
+  - 99: **536.56**
+  - 500: **530.28**
+
+### Structural branch tested
+- Added an arb-classification split to first-in-step update path:
+  - `likelyArb = firstInStep && tradeRatio <= ARB_MAX_RATIO`
+  - Arb path: strong `pHat` update + sigma injection.
+  - Non-arb path: weaker `pHat` recenter + sigma decay-only.
+- This branch became `Strategy_ghost_arbclass.sol`.
+
+### Immediate impact
+- First arb-class branch: **553.93** (10), improving vs baseline.
+- After tuning (coord2/coord3):
+  - `PHAT_ALPHA_ARB=0.30`
+  - `PHAT_ALPHA_RETAIL=0.15`
+  - `ARB_MAX_RATIO=WAD/360`
+  - `SIGMA_RETAIL_DECAY=0.999`
+- Result: **555.17** (10), **547.95** (25), **538.20** (99), **531.96** (500).
+
+### Additional optimization passes
+1. Full coordinate descent from 555.17:
+- Improvements from:
+  - `SIGNAL_THRESHOLD=WAD/600`
+  - `SIGMA_DECAY=0.65`
+  - `DIR_IMPACT_MULT=2`
+  - `DIR_COEF=60bps`
+  - `DIR_TOX_COEF=0`
+  - `TAIL_KNEE=600bps`
+  - `TAIL_SLOPE=0.94`
+- Peak: **555.34** (10), **548.06** (25), **538.27** (99), **532.08** (500).
+
+2. Random-interaction search (200 iters) from 555.34:
+- Peak found at iteration 127: **555.73**.
+- Key shifts vs 555.34:
+  - `SIGNAL_THRESHOLD=WAD/700`
+  - `DIR_DECAY=0.85`
+  - `TOX_DECAY=0.90`
+  - `SIZE_BLEND_DECAY=0.80`
+  - `PHAT_ALPHA_ARB=0.34`
+  - `PHAT_ALPHA_RETAIL=0.12`
+  - `DIR_IMPACT_MULT=1`
+  - `TOX_COEF=200bps`
+  - `TOX_QUAD_COEF=20000bps`
+  - `DIR_COEF=70bps`
+  - `DIR_TOX_COEF=20bps`
+  - `TAIL_KNEE=700bps`
+  - `TAIL_SLOPE=0.90`
+
+3. One-factor sensitivity from 555.73 and pairwise composition:
+- Positive one-factor levers:
+  - `ACT_COEF=42000bps` -> 555.82
+  - `DIR_COEF=80bps` -> 555.75
+- Best pair combination:
+  - `ACT_COEF=42000bps` + `DIR_COEF=90bps`
+- Final promoted result:
+  - 10: **555.89**
+  - 25: **548.36**
+  - 99: **538.59**
+  - 500: **532.18**
+
+### Rejected branch in this iteration
+- `Strategy_ghost_hazardx.sol` (added carry + inventory skew + stronger hazard behavior) regressed hard to **543.62** (10). Rejected.
+- `Strategy_ghost_arbcarry.sol` (carry premium on likely-arb) regressed to **551.78** (10). Rejected.
+
+### Conclusion
+- Major structural step (arb classification split) produced the biggest gain this cycle.
+- Subsequent gains are now incremental and indicate a local ceiling near **555.9** on this deterministic 10-sim seed set.
+- `Strategy.sol` updated to the current best-known robust candidate from this cycle.
+
+## Iteration 55 — 1000-Sim Tournament on Top Cohort
+
+### Method
+- Ran full 25-sim screening across all root `Strategy*.sol` (79 files, 4 fails).
+- Selected top cohort with `25-sim >= 539.5` (20 candidates).
+- Ran each candidate for **1000 simulations** and ranked by edge.
+
+### 25-sim screening notes
+- Highest 25-sim scores were ghost-family variants led by:
+  - `Strategy.sol` (548.36)
+  - `Strategy_ghost_arbclass.sol` (547.95)
+- Fails at 25 in this sweep:
+  - `Strategy_alt4.sol`
+  - `Strategy_candidate.sol`
+  - `Strategy_carry_premium.sol`
+  - `Strategy_moonshot.sol`
+
+### 1000-sim results (top cohort)
+1. `Strategy.sol` = **525.08**
+2. `Strategy_ghost_arbclass.sol` = **524.84**
+3. `Strategy_ghost_tuned.sol` = **523.12**
+4. `Strategy_ghost_quick.sol` = **523.08**
+5. `Strategy_ghost_randbest.sol` = **522.70**
+6. `Strategy_ghost_candidate.sol` = **522.70**
+7. `Strategy_ghost_ascii.sol` = **522.70**
+8. `Strategy_ghost_search.sol` = **522.52**
+9. `Strategy_ghost_arbcarry.sol` = **520.59**
+10. `Strategy_ghost_rebound.sol` = **520.28**
+11. `Strategy_ghost_bio1.sol` = **519.74**
+12. `Strategy_ghost_hill.sol` = **519.13**
+13. `Strategy_stage3_rank1.sol` = **516.53**
+14. `Strategy_multiscale.sol` = **516.37**
+15. `Strategy_stale_tax.sol` = **516.35**
+16. `Strategy_stale_guard.sol` = **516.35**
+17. `Strategy_lowlambda_guard.sol` = **516.35**
+18. `Strategy_coord99_best.sol` = **516.35**
+19. `Strategy_retail_step_compete.sol` = **516.30**
+20. `Strategy_phase_recenter.sol` = **516.28**
+
+### Conclusion
+- The current promoted `Strategy.sol` remains the best long-run performer in this top cohort at 1000 sims.
+- Gap vs nearest alternative is +0.24 edge (`525.08 - 524.84`).

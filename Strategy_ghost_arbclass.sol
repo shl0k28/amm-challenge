@@ -7,18 +7,18 @@ import {TradeInfo} from "./IAMMStrategy.sol";
 contract Strategy is AMMStrategyBase {
     // --- decay / update constants ---
     uint256 constant ELAPSED_CAP = 8;
-    uint256 constant SIGNAL_THRESHOLD = WAD / 700; // ~20 bps of reserve
-    uint256 constant DIR_DECAY = 850000000000000000; // 0.80
+    uint256 constant SIGNAL_THRESHOLD = WAD / 500; // ~20 bps of reserve
+    uint256 constant DIR_DECAY = 700000000000000000; // 0.80
     uint256 constant ACT_DECAY = 700000000000000000; // 0.70
     uint256 constant SIZE_DECAY = 600000000000000000; // 0.70
-    uint256 constant TOX_DECAY = 900000000000000000; // 0.80
-    uint256 constant SIGMA_DECAY = 650000000000000000; // 0.65
+    uint256 constant TOX_DECAY = 950000000000000000; // 0.80
+    uint256 constant SIGMA_DECAY = 700000000000000000; // 0.65
     uint256 constant LAMBDA_DECAY = 994000000000000000; // 0.99
-    uint256 constant SIZE_BLEND_DECAY = 800000000000000000; // 0.65
+    uint256 constant SIZE_BLEND_DECAY = 750000000000000000; // 0.65
     uint256 constant TOX_BLEND_DECAY = 100000000000000000;
     uint256 constant ACT_BLEND_DECAY = 993000000000000000;
-    uint256 constant PHAT_ALPHA_ARB = 340000000000000000;
-    uint256 constant PHAT_ALPHA_RETAIL = 120000000000000000;
+    uint256 constant PHAT_ALPHA_ARB = 300000000000000000;
+    uint256 constant PHAT_ALPHA_RETAIL = 150000000000000000;
     uint256 constant PHAT_SHOCK_GATE = 30000000000000000;
     uint256 constant DIR_IMPACT_MULT = 1;
     uint256 constant ARB_MAX_RATIO = WAD / 360;
@@ -35,14 +35,14 @@ contract Strategy is AMMStrategyBase {
     uint256 constant BASE_FEE = 3 * BPS;
     uint256 constant SIGMA_COEF = 200000000000000000; // 0.20
     uint256 constant LAMBDA_COEF = 12 * BPS;
-    uint256 constant FLOW_SIZE_COEF = 5600 * BPS;
-    uint256 constant TOX_COEF = 200 * BPS;
-    uint256 constant TOX_QUAD_COEF = 20000 * BPS;
-    uint256 constant ACT_COEF = 42000 * BPS;
-    uint256 constant DIR_COEF = 90 * BPS;
-    uint256 constant DIR_TOX_COEF = 20 * BPS;
+    uint256 constant FLOW_SIZE_COEF = 6400 * BPS;
+    uint256 constant TOX_COEF = 300 * BPS;
+    uint256 constant TOX_QUAD_COEF = 12000 * BPS;
+    uint256 constant ACT_COEF = 56000 * BPS;
+    uint256 constant DIR_COEF = 50 * BPS;
+    uint256 constant DIR_TOX_COEF = 40 * BPS;
     uint256 constant STALE_DIR_COEF = 6900 * BPS;
-    uint256 constant TAIL_KNEE = 700 * BPS;
+    uint256 constant TAIL_KNEE = 500 * BPS;
     uint256 constant TAIL_SLOPE = 900000000000000000; // 0.90
 
     // slots[0] = bid fee

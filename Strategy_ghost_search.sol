@@ -7,43 +7,40 @@ import {TradeInfo} from "./IAMMStrategy.sol";
 contract Strategy is AMMStrategyBase {
     // --- decay / update constants ---
     uint256 constant ELAPSED_CAP = 8;
-    uint256 constant SIGNAL_THRESHOLD = WAD / 700; // ~20 bps of reserve
-    uint256 constant DIR_DECAY = 850000000000000000; // 0.80
+    uint256 constant SIGNAL_THRESHOLD = WAD / 900; // ~20 bps of reserve
+    uint256 constant DIR_DECAY = 900000000000000000; // 0.80
     uint256 constant ACT_DECAY = 700000000000000000; // 0.70
     uint256 constant SIZE_DECAY = 600000000000000000; // 0.70
-    uint256 constant TOX_DECAY = 900000000000000000; // 0.80
-    uint256 constant SIGMA_DECAY = 650000000000000000; // 0.65
+    uint256 constant TOX_DECAY = 950000000000000000; // 0.80
+    uint256 constant SIGMA_DECAY = 750000000000000000; // 0.65
     uint256 constant LAMBDA_DECAY = 994000000000000000; // 0.99
-    uint256 constant SIZE_BLEND_DECAY = 800000000000000000; // 0.65
-    uint256 constant TOX_BLEND_DECAY = 100000000000000000;
-    uint256 constant ACT_BLEND_DECAY = 993000000000000000;
-    uint256 constant PHAT_ALPHA_ARB = 340000000000000000;
-    uint256 constant PHAT_ALPHA_RETAIL = 120000000000000000;
-    uint256 constant PHAT_SHOCK_GATE = 30000000000000000;
+    uint256 constant SIZE_BLEND_DECAY = 650000000000000000; // 0.65
+    uint256 constant TOX_BLEND_DECAY = 80000000000000000;
+    uint256 constant ACT_BLEND_DECAY = 989000000000000000;
+    uint256 constant PHAT_ALPHA = 280000000000000000; // 0.22
+    uint256 constant PHAT_SHOCK_GATE = 60000000000000000;
     uint256 constant DIR_IMPACT_MULT = 1;
-    uint256 constant ARB_MAX_RATIO = WAD / 360;
-    uint256 constant SIGMA_RETAIL_DECAY = 999000000000000000;
 
     // --- state caps ---
-    uint256 constant RET_CAP = WAD / 10; // 10%
+    uint256 constant RET_CAP = WAD / 12; // 10%
     uint256 constant TOX_CAP = WAD / 5; // 20%
-    uint256 constant TRADE_RATIO_CAP = WAD / 5; // 20%
+    uint256 constant TRADE_RATIO_CAP = WAD / 10; // 20%
     uint256 constant LAMBDA_CAP = 5 * WAD; // max 5 trades/step estimate
     uint256 constant STEP_COUNT_CAP = 64; // guardrail
 
     // --- fee model constants ---
-    uint256 constant BASE_FEE = 3 * BPS;
-    uint256 constant SIGMA_COEF = 200000000000000000; // 0.20
-    uint256 constant LAMBDA_COEF = 12 * BPS;
+    uint256 constant BASE_FEE = 2 * BPS;
+    uint256 constant SIGMA_COEF = 350000000000000000; // 0.20
+    uint256 constant LAMBDA_COEF = 8 * BPS;
     uint256 constant FLOW_SIZE_COEF = 5600 * BPS;
     uint256 constant TOX_COEF = 200 * BPS;
-    uint256 constant TOX_QUAD_COEF = 20000 * BPS;
-    uint256 constant ACT_COEF = 42000 * BPS;
-    uint256 constant DIR_COEF = 90 * BPS;
-    uint256 constant DIR_TOX_COEF = 20 * BPS;
+    uint256 constant TOX_QUAD_COEF = 9000 * BPS;
+    uint256 constant ACT_COEF = 50000 * BPS;
+    uint256 constant DIR_COEF = 40 * BPS;
+    uint256 constant DIR_TOX_COEF = 140 * BPS;
     uint256 constant STALE_DIR_COEF = 6900 * BPS;
-    uint256 constant TAIL_KNEE = 700 * BPS;
-    uint256 constant TAIL_SLOPE = 900000000000000000; // 0.90
+    uint256 constant TAIL_KNEE = 500 * BPS;
+    uint256 constant TAIL_SLOPE = 860000000000000000; // 0.90
 
     // slots[0] = bid fee
     // slots[1] = ask fee
@@ -120,25 +117,17 @@ contract Strategy is AMMStrategyBase {
             pImplied = trade.isBuy ? wmul(spot, gamma) : wdiv(spot, gamma);
         }
 
-        uint256 tradeRatio = trade.reserveY > 0 ? wdiv(trade.amountY, trade.reserveY) : 0;
-        if (tradeRatio > TRADE_RATIO_CAP) tradeRatio = TRADE_RATIO_CAP;
-        bool likelyArb = firstInStep && tradeRatio <= ARB_MAX_RATIO;
-
         if (firstInStep) {
             uint256 ret = pHat > 0 ? wdiv(absDiff(pImplied, pHat), pHat) : 0;
-            if (likelyArb) {
-                if (ret <= PHAT_SHOCK_GATE) {
-                    pHat = wmul(pHat, WAD - PHAT_ALPHA_ARB) + wmul(pImplied, PHAT_ALPHA_ARB);
-                }
-                if (ret > RET_CAP) ret = RET_CAP;
-                sigmaHat = wmul(sigmaHat, SIGMA_DECAY) + wmul(ret, WAD - SIGMA_DECAY);
-            } else {
-                if (ret <= PHAT_SHOCK_GATE) {
-                    pHat = wmul(pHat, WAD - PHAT_ALPHA_RETAIL) + wmul(pImplied, PHAT_ALPHA_RETAIL);
-                }
-                sigmaHat = wmul(sigmaHat, SIGMA_RETAIL_DECAY);
+            if (ret <= PHAT_SHOCK_GATE) {
+                pHat = wmul(pHat, WAD - PHAT_ALPHA) + wmul(pImplied, PHAT_ALPHA);
             }
+            if (ret > RET_CAP) ret = RET_CAP;
+            sigmaHat = wmul(sigmaHat, SIGMA_DECAY) + wmul(ret, WAD - SIGMA_DECAY);
         }
+
+        uint256 tradeRatio = trade.reserveY > 0 ? wdiv(trade.amountY, trade.reserveY) : 0;
+        if (tradeRatio > TRADE_RATIO_CAP) tradeRatio = TRADE_RATIO_CAP;
 
         if (tradeRatio > SIGNAL_THRESHOLD) {
             uint256 push = tradeRatio * DIR_IMPACT_MULT;
@@ -246,6 +235,6 @@ contract Strategy is AMMStrategyBase {
     }
 
     function getName() external pure override returns (string memory) {
-        return "BandShield_ghost";
+        return "BandShield_ghost_search";
     }
 }

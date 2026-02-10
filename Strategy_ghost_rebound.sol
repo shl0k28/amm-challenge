@@ -7,22 +7,19 @@ import {TradeInfo} from "./IAMMStrategy.sol";
 contract Strategy is AMMStrategyBase {
     // --- decay / update constants ---
     uint256 constant ELAPSED_CAP = 8;
-    uint256 constant SIGNAL_THRESHOLD = WAD / 700; // ~20 bps of reserve
-    uint256 constant DIR_DECAY = 850000000000000000; // 0.80
+    uint256 constant SIGNAL_THRESHOLD = WAD / 500; // ~20 bps of reserve
+    uint256 constant DIR_DECAY = 800000000000000000; // 0.80
     uint256 constant ACT_DECAY = 700000000000000000; // 0.70
-    uint256 constant SIZE_DECAY = 600000000000000000; // 0.70
-    uint256 constant TOX_DECAY = 900000000000000000; // 0.80
+    uint256 constant SIZE_DECAY = 700000000000000000; // 0.70
+    uint256 constant TOX_DECAY = 800000000000000000; // 0.80
     uint256 constant SIGMA_DECAY = 650000000000000000; // 0.65
-    uint256 constant LAMBDA_DECAY = 994000000000000000; // 0.99
-    uint256 constant SIZE_BLEND_DECAY = 800000000000000000; // 0.65
-    uint256 constant TOX_BLEND_DECAY = 100000000000000000;
-    uint256 constant ACT_BLEND_DECAY = 993000000000000000;
-    uint256 constant PHAT_ALPHA_ARB = 340000000000000000;
-    uint256 constant PHAT_ALPHA_RETAIL = 120000000000000000;
-    uint256 constant PHAT_SHOCK_GATE = 30000000000000000;
-    uint256 constant DIR_IMPACT_MULT = 1;
-    uint256 constant ARB_MAX_RATIO = WAD / 360;
-    uint256 constant SIGMA_RETAIL_DECAY = 999000000000000000;
+    uint256 constant LAMBDA_DECAY = 996000000000000000; // 0.99
+    uint256 constant SIZE_BLEND_DECAY = 650000000000000000; // 0.65
+    uint256 constant TOX_BLEND_DECAY = 120000000000000000;
+    uint256 constant ACT_BLEND_DECAY = 990500000000000000;
+    uint256 constant PHAT_ALPHA = 280000000000000000; // 0.22
+    uint256 constant PHAT_SHOCK_GATE = 40000000000000000;
+    uint256 constant DIR_IMPACT_MULT = 2;
 
     // --- state caps ---
     uint256 constant RET_CAP = WAD / 10; // 10%
@@ -36,14 +33,17 @@ contract Strategy is AMMStrategyBase {
     uint256 constant SIGMA_COEF = 200000000000000000; // 0.20
     uint256 constant LAMBDA_COEF = 12 * BPS;
     uint256 constant FLOW_SIZE_COEF = 5600 * BPS;
-    uint256 constant TOX_COEF = 200 * BPS;
-    uint256 constant TOX_QUAD_COEF = 20000 * BPS;
-    uint256 constant ACT_COEF = 42000 * BPS;
-    uint256 constant DIR_COEF = 90 * BPS;
-    uint256 constant DIR_TOX_COEF = 20 * BPS;
+    uint256 constant TOX_COEF = 300 * BPS;
+    uint256 constant TOX_QUAD_COEF = 11700 * BPS;
+    uint256 constant ACT_COEF = 53500 * BPS;
+    uint256 constant DIR_COEF = 20 * BPS;
+    uint256 constant DIR_TOX_COEF = 100 * BPS;
     uint256 constant STALE_DIR_COEF = 6900 * BPS;
-    uint256 constant TAIL_KNEE = 700 * BPS;
+    uint256 constant TAIL_KNEE = 500 * BPS;
     uint256 constant TAIL_SLOPE = 900000000000000000; // 0.90
+    uint256 constant FIRST_ARB_RATIO = WAD / 320; // ~31bps
+    uint256 constant CONT_ARB_REBOUND = 9 * BPS;
+    uint256 constant CONT_NORMAL_REBOUND = 3 * BPS;
 
     // slots[0] = bid fee
     // slots[1] = ask fee
@@ -56,6 +56,7 @@ contract Strategy is AMMStrategyBase {
     // slots[8] = sizeHat
     // slots[9] = toxEma
     // slots[10] = stepTradeCount (raw integer)
+    // slots[11] = firstTradeArbish (0/1)
 
     function afterInitialize(uint256 initialX, uint256 initialY) external override returns (uint256, uint256) {
         slots[0] = BASE_FEE;
@@ -69,6 +70,7 @@ contract Strategy is AMMStrategyBase {
         slots[8] = 2000000000000000; // 0.2% reserve-size ratio guess
         slots[9] = 0;
         slots[10] = 0;
+        slots[11] = 0;
         return (BASE_FEE, BASE_FEE);
     }
 
@@ -84,6 +86,7 @@ contract Strategy is AMMStrategyBase {
         uint256 sizeHat = slots[8];
         uint256 toxEma = slots[9];
         uint256 stepTradeCount = slots[10];
+        uint256 firstArbish = slots[11];
 
         bool isNewStep = trade.timestamp > lastTs;
         if (isNewStep) {
@@ -120,24 +123,19 @@ contract Strategy is AMMStrategyBase {
             pImplied = trade.isBuy ? wmul(spot, gamma) : wdiv(spot, gamma);
         }
 
-        uint256 tradeRatio = trade.reserveY > 0 ? wdiv(trade.amountY, trade.reserveY) : 0;
-        if (tradeRatio > TRADE_RATIO_CAP) tradeRatio = TRADE_RATIO_CAP;
-        bool likelyArb = firstInStep && tradeRatio <= ARB_MAX_RATIO;
-
         if (firstInStep) {
             uint256 ret = pHat > 0 ? wdiv(absDiff(pImplied, pHat), pHat) : 0;
-            if (likelyArb) {
-                if (ret <= PHAT_SHOCK_GATE) {
-                    pHat = wmul(pHat, WAD - PHAT_ALPHA_ARB) + wmul(pImplied, PHAT_ALPHA_ARB);
-                }
-                if (ret > RET_CAP) ret = RET_CAP;
-                sigmaHat = wmul(sigmaHat, SIGMA_DECAY) + wmul(ret, WAD - SIGMA_DECAY);
-            } else {
-                if (ret <= PHAT_SHOCK_GATE) {
-                    pHat = wmul(pHat, WAD - PHAT_ALPHA_RETAIL) + wmul(pImplied, PHAT_ALPHA_RETAIL);
-                }
-                sigmaHat = wmul(sigmaHat, SIGMA_RETAIL_DECAY);
+            if (ret <= PHAT_SHOCK_GATE) {
+                pHat = wmul(pHat, WAD - PHAT_ALPHA) + wmul(pImplied, PHAT_ALPHA);
             }
+            if (ret > RET_CAP) ret = RET_CAP;
+            sigmaHat = wmul(sigmaHat, SIGMA_DECAY) + wmul(ret, WAD - SIGMA_DECAY);
+        }
+
+        uint256 tradeRatio = trade.reserveY > 0 ? wdiv(trade.amountY, trade.reserveY) : 0;
+        if (tradeRatio > TRADE_RATIO_CAP) tradeRatio = TRADE_RATIO_CAP;
+        if (firstInStep) {
+            firstArbish = tradeRatio <= FIRST_ARB_RATIO ? 1 : 0;
         }
 
         if (tradeRatio > SIGNAL_THRESHOLD) {
@@ -204,6 +202,14 @@ contract Strategy is AMMStrategyBase {
         bidFee = clampFee(_compressTail(bidFee));
         askFee = clampFee(_compressTail(askFee));
 
+        if (!firstInStep) {
+            uint256 rebate = firstArbish == 1 ? CONT_ARB_REBOUND : CONT_NORMAL_REBOUND;
+            bidFee = bidFee > rebate ? (bidFee - rebate) : 0;
+            askFee = askFee > rebate ? (askFee - rebate) : 0;
+            bidFee = clampFee(bidFee);
+            askFee = clampFee(askFee);
+        }
+
         stepTradeCount = stepTradeCount + 1;
         if (stepTradeCount > STEP_COUNT_CAP) stepTradeCount = STEP_COUNT_CAP;
 
@@ -218,6 +224,7 @@ contract Strategy is AMMStrategyBase {
         slots[8] = sizeHat;
         slots[9] = toxEma;
         slots[10] = stepTradeCount;
+        slots[11] = firstArbish;
 
         return (bidFee, askFee);
     }
@@ -246,6 +253,6 @@ contract Strategy is AMMStrategyBase {
     }
 
     function getName() external pure override returns (string memory) {
-        return "BandShield_ghost";
+        return "BandShield_ghost_rebound";
     }
 }
